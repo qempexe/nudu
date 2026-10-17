@@ -25,13 +25,21 @@ pub struct Snapshot {
     pub elapsed: Duration,
 }
 
+/// How a scan ended.
+pub enum Outcome {
+    Done(Entry),
+    /// The user pressed Esc.
+    Cancelled,
+    /// The scan could not start, usually because the folder is gone
+    /// (a drive was unmounted). Not fatal: the browser recovers.
+    Failed(io::Error),
+}
+
 /// Scans `path` on worker threads and draws progress until it finishes.
-/// Returns `Ok(None)` if the user cancelled.
-pub fn run(
-    terminal: &mut DefaultTerminal,
-    path: &Path,
-    opts: ScanOptions,
-) -> io::Result<Option<Entry>> {
+///
+/// The outer `io::Result` is only for terminal errors, which are fatal.
+/// Problems with the folder itself come back as `Outcome::Failed`.
+pub fn run(terminal: &mut DefaultTerminal, path: &Path, opts: ScanOptions) -> io::Result<Outcome> {
     let progress = Progress::default();
     let started = Instant::now();
     let display_path = crate::units::shorten_home(path);
@@ -66,6 +74,10 @@ pub fn run(
             }
         }
 
-        worker.join().expect("scan thread panicked")
+        Ok(match worker.join().expect("scan thread panicked") {
+            Ok(Some(root)) => Outcome::Done(root),
+            Ok(None) => Outcome::Cancelled,
+            Err(e) => Outcome::Failed(e),
+        })
     })
 }

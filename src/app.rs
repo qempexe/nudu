@@ -39,10 +39,11 @@ pub struct Settings {
 pub enum Job {
     /// Scan the mounted drive at this child index, then open it.
     ScanMount(usize),
-    /// Scan the open folder again.
-    Rescan,
+    /// Scan the open folder again. `reason` explains why, when nudu does
+    /// it by itself (a drive was unmounted).
+    Rescan { reason: Option<String> },
     /// Start over in another place, like a drive picked from the list.
-    OpenRoot(PathBuf),
+    OpenRoot { path: PathBuf, reason: Option<String> },
 }
 
 /// The drives popup: every mounted disk, with how full it is.
@@ -232,8 +233,8 @@ impl App {
             if let Some(job) = self.job.take() {
                 match job {
                     Job::ScanMount(index) => self.scan_mount(terminal, index)?,
-                    Job::Rescan => self.rescan(terminal)?,
-                    Job::OpenRoot(path) => self.open_root(terminal, path)?,
+                    Job::Rescan { reason } => self.rescan(terminal, reason)?,
+                    Job::OpenRoot { path, reason } => self.open_root(terminal, path, reason)?,
                 }
                 continue;
             }
@@ -275,10 +276,14 @@ impl App {
             if self.new_drive.as_ref() == Some(&point) {
                 self.new_drive = None;
             }
-            self.note(
-                &format!("Unmounted {} · r to rescan", crate::units::shorten_home(&point)),
-                false,
-            );
+            self.settings.scan.include.retain(|p| p != &point);
+            let reason = format!("{} was unmounted", crate::units::shorten_home(&point));
+            if self.current_path().starts_with(&point) || self.root_path.starts_with(&point) {
+                // We are inside the drive that just went away: step out.
+                self.recover(reason);
+            } else {
+                self.note(&format!("{reason} · r to rescan"), false);
+            }
         }
         // If the drives popup is open, keep it current.
         if self.drives.is_some() {
@@ -315,7 +320,10 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => view.list.select(Some(at.saturating_sub(1))),
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                 if let Some((drive, _)) = view.drives.get(at) {
-                    self.job = Some(Job::OpenRoot(drive.mount.point.clone()));
+                    self.job = Some(Job::OpenRoot {
+                        path: drive.mount.point.clone(),
+                        reason: None,
+                    });
                 }
                 self.drives = None;
             }
@@ -368,10 +376,10 @@ impl App {
             KeyCode::Char('c') => self.sort_by(SortKey::Items),
             KeyCode::Char('m') => self.sort_by(SortKey::Modified),
             KeyCode::Char('d') | KeyCode::Delete => self.request_delete(),
-            KeyCode::Char('r') => self.job = Some(Job::Rescan),
+            KeyCode::Char('r') => self.job = Some(Job::Rescan { reason: None }),
             KeyCode::Char('D') => self.open_drives(),
             KeyCode::Char('g') => match self.new_drive.clone() {
-                Some(path) => self.job = Some(Job::OpenRoot(path)),
+                Some(path) => self.job = Some(Job::OpenRoot { path, reason: None }),
                 None => self.note("No new drive yet · D lists all drives", false),
             },
             _ => {}
@@ -511,8 +519,21 @@ impl App {
             one_filesystem: true,
             include: Vec::new(),
         };
-        let Some(mut scanned) = scanning::run(terminal, &path, opts)? else {
-            return Ok(()); // cancelled
+        let mut scanned = match scanning::run(terminal, &path, opts)? {
+            scanning::Outcome::Done(entry) => entry,
+            scanning::Outcome::Cancelled => return Ok(()),
+            scanning::Outcome::Failed(e) => {
+                // Most likely unmounted in the meantime: refresh this folder.
+                let shown = crate::units::shorten_home(&path);
+                if path.exists() {
+                    self.note(&format!("Could not scan {shown}: {e}"), true);
+                } else {
+                    self.job = Some(Job::Rescan {
+                        reason: Some(format!("{shown} is no longer mounted")),
+                    });
+                }
+                return Ok(());
+            }
         };
         scanned.name = name;
         scanned.other_fs = Some(fs_type.clone());
@@ -527,13 +548,24 @@ impl App {
     }
 
     /// Scans another place from scratch and browses it instead.
-    fn open_root(&mut self, terminal: &mut DefaultTerminal, path: PathBuf) -> io::Result<()> {
+    fn open_root(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        path: PathBuf,
+        reason: Option<String>,
+    ) -> io::Result<()> {
         let opts = ScanOptions {
             one_filesystem: self.settings.scan.one_filesystem,
             include: Vec::new(),
         };
-        let Some(root) = scanning::run(terminal, &path, opts.clone())? else {
-            return Ok(()); // cancelled: stay where we were
+        let root = match scanning::run(terminal, &path, opts.clone())? {
+            scanning::Outcome::Done(root) => root,
+            scanning::Outcome::Cancelled => return Ok(()), // stay where we were
+            scanning::Outcome::Failed(e) => {
+                let shown = crate::units::shorten_home(&path);
+                self.note(&format!("Could not open {shown}: {e}"), true);
+                return Ok(());
+            }
         };
         self.root = root;
         self.root_path = path;
@@ -549,15 +581,25 @@ impl App {
             crate::units::shorten_home(&self.root_path),
             human_size(self.root.disk)
         );
-        self.note(&summary, false);
+        self.note(&with_reason(reason, summary), false);
         Ok(())
     }
 
     /// `r`: scans the open folder again, picking up new files and mounts.
-    fn rescan(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
+    fn rescan(&mut self, terminal: &mut DefaultTerminal, reason: Option<String>) -> io::Result<()> {
         let path = self.current_path();
-        let Some(mut fresh) = scanning::run(terminal, &path, self.settings.scan.clone())? else {
-            return Ok(()); // cancelled
+        let mut fresh = match scanning::run(terminal, &path, self.settings.scan.clone())? {
+            scanning::Outcome::Done(entry) => entry,
+            scanning::Outcome::Cancelled => return Ok(()),
+            scanning::Outcome::Failed(e) => {
+                let shown = crate::units::shorten_home(&path);
+                if path.exists() {
+                    self.note(&format!("Could not rescan {shown}: {e}"), true);
+                } else {
+                    self.recover(reason.unwrap_or_else(|| format!("{shown} is gone")));
+                }
+                return Ok(());
+            }
         };
         let row = self.list.selected().unwrap_or(0);
 
@@ -585,8 +627,32 @@ impl App {
             human_size(dir.disk),
             crate::units::group_digits(dir.items)
         );
-        self.note(&summary, false);
+        self.note(&with_reason(reason, summary), false);
         Ok(())
+    }
+
+    /// The open folder no longer exists (its drive was unmounted, or it was
+    /// deleted outside nudu). Climb to the nearest folder that still exists
+    /// and rescan it. If even the scan root is gone, start over from its
+    /// nearest existing parent.
+    fn recover(&mut self, reason: String) {
+        while !self.trail.is_empty() && !self.current_path().exists() {
+            self.trail.pop();
+        }
+        *self.list.offset_mut() = 0;
+        self.refresh_order();
+        self.select_row(0);
+        self.job = Some(if self.current_path().exists() {
+            Job::Rescan { reason: Some(reason) }
+        } else {
+            let path = self
+                .root_path
+                .ancestors()
+                .find(|p| p.exists())
+                .unwrap_or(std::path::Path::new("/"))
+                .to_path_buf();
+            Job::OpenRoot { path, reason: Some(reason) }
+        });
     }
 
     /// Back to the parent directory, with the cursor on the folder we left.
@@ -602,4 +668,12 @@ impl App {
 /// The raw mount table, compared as a whole to notice any change.
 fn read_mounts() -> String {
     std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default()
+}
+
+/// `"USB was unmounted · Rescanned · …"`, or just the summary.
+fn with_reason(reason: Option<String>, summary: String) -> String {
+    match reason {
+        Some(reason) => format!("{reason} · {summary}"),
+        None => summary,
+    }
 }

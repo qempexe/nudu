@@ -100,8 +100,13 @@ fn run(terminal: &mut ratatui::DefaultTerminal, args: &Args, path: PathBuf) -> s
         one_filesystem: !args.cross_fs,
         include: Vec::new(),
     };
-    let Some(root) = scanning::run(terminal, &path, opts.clone())? else {
-        return Ok(Next::Exit); // cancelled
+    let root = match scanning::run(terminal, &path, opts.clone())? {
+        scanning::Outcome::Done(root) => root,
+        scanning::Outcome::Cancelled => return Ok(Next::Exit),
+        // Say which path failed, not just "No such file or directory".
+        scanning::Outcome::Failed(e) => {
+            return Err(std::io::Error::new(e.kind(), format!("{}: {e}", path.display())));
+        }
     };
     let fs = FsInfo::for_path(&path);
     let settings = Settings {
