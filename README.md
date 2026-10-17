@@ -2,6 +2,9 @@
 
 **new du** · *Never Underestimate Disk Usage*
 
+[![ci](https://github.com/qempexe/nudu/actions/workflows/ci.yml/badge.svg)](https://github.com/qempexe/nudu/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/qempexe/nudu)](https://github.com/qempexe/nudu/releases)
+
 A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is eating your disk.
 
 ```
@@ -44,7 +47,20 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
 
 ## Install
 
-Requires a recent stable Rust toolchain.
+### Prebuilt binary
+
+Static binaries for x86_64 and ARM64 are attached to every
+[release](https://github.com/qempexe/nudu/releases). They run on any Linux distribution.
+
+```sh
+curl -LO https://github.com/qempexe/nudu/releases/latest/download/nudu-v0.1.0-x86_64-unknown-linux-musl.tar.gz
+tar xzf nudu-v0.1.0-x86_64-unknown-linux-musl.tar.gz
+sudo install -m 755 nudu-v0.1.0-x86_64-unknown-linux-musl/nudu /usr/local/bin/nudu
+```
+
+### From source
+
+Requires Rust 1.88 or newer.
 
 ```sh
 git clone https://github.com/qempexe/nudu.git
@@ -97,6 +113,10 @@ nudu -r           # read-only: deleting is turned off
 
 Icons use [Nerd Fonts](https://www.nerdfonts.com/). Use `--no-icons` if they show up as boxes.
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
-MIT
+[MIT](LICENSE)
