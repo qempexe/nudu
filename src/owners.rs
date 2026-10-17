@@ -13,6 +13,7 @@
 //! Each entry stores its owner as a small `Owner` value. Names (package,
 //! repo, app) live once in a shared table and are referred to by number.
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -160,8 +161,12 @@ impl PackageDb {
             ..Default::default()
         };
         for pkg in fs::read_dir(dir).into_iter().flatten().flatten() {
-            let Some(name) = pacman_name(&pkg.path()) else { continue };
-            let Ok(files) = fs::read_to_string(pkg.path().join("files")) else { continue };
+            let Some(name) = pacman_name(&pkg.path()) else {
+                continue;
+            };
+            let Ok(files) = fs::read_to_string(pkg.path().join("files")) else {
+                continue;
+            };
             let name = intern(&name);
             let listed = files
                 .lines()
@@ -183,9 +188,13 @@ impl PackageDb {
         };
         for item in fs::read_dir(dir).into_iter().flatten().flatten() {
             let file_name = item.file_name().to_string_lossy().into_owned();
-            let Some(stem) = file_name.strip_suffix(".list") else { continue };
+            let Some(stem) = file_name.strip_suffix(".list") else {
+                continue;
+            };
             let package = stem.split(':').next().unwrap_or(stem);
-            let Ok(list) = fs::read_to_string(item.path()) else { continue };
+            let Ok(list) = fs::read_to_string(item.path()) else {
+                continue;
+            };
             let name = intern(package);
             for line in list.lines().filter(|l| l.starts_with('/') && *l != "/.") {
                 db.claim(PathBuf::from(line), name);
@@ -229,11 +238,16 @@ fn pacman_name(dir: &Path) -> Option<String> {
 /// but older packages still list the short form. Use the `/usr` form for
 /// both, so `/bin/ls` and `/usr/bin/ls` are the same file.
 fn normalize(path: &Path) -> PathBuf {
-    for (short, long) in [("/bin", "/usr/bin"), ("/sbin", "/usr/sbin"), ("/lib64", "/usr/lib64"), ("/lib", "/usr/lib")] {
-        if let Ok(rest) = path.strip_prefix(short) {
-            if merged_usr() {
-                return Path::new(long).join(rest);
-            }
+    for (short, long) in [
+        ("/bin", "/usr/bin"),
+        ("/sbin", "/usr/sbin"),
+        ("/lib64", "/usr/lib64"),
+        ("/lib", "/usr/lib"),
+    ] {
+        if let Ok(rest) = path.strip_prefix(short)
+            && merged_usr()
+        {
+            return Path::new(long).join(rest);
         }
     }
     path.to_path_buf()
@@ -291,12 +305,17 @@ fn rule(path: &Path, home: Option<&Path>) -> Option<Owner> {
     if let Some(home) = home
         && let Ok(rest) = path.strip_prefix(home)
     {
-        let rest: Vec<&str> = rest.components().filter_map(|c| c.as_os_str().to_str()).collect();
+        let rest: Vec<&str> = rest
+            .components()
+            .filter_map(|c| c.as_os_str().to_str())
+            .collect();
         return match rest[..] {
             [".cache", x] => Some(Owner::Cache(intern(x))),
             [".config", x] => Some(Owner::Config(intern(x))),
             [".steam"] | [".local", "share", "Steam"] => Some(Owner::Steam(None)),
-            [".local", "share", "flatpak", "app" | "runtime", id] => Some(Owner::Flatpak(intern(id))),
+            [".local", "share", "flatpak", "app" | "runtime", id] => {
+                Some(Owner::Flatpak(intern(id)))
+            }
             [".var", "app", id] => Some(Owner::Flatpak(intern(id))),
             [".local", "share", "Trash"] => Some(Owner::Trash),
             [".local", "share", "containers"] => Some(Owner::Containers),
@@ -354,7 +373,10 @@ pub fn assign(root: &mut Entry, path: &Path) {
         },
     };
     // What a folder at `path` inherits from the folders above it.
-    let inherited = path.parent().map(|p| inherited_at(p, &ctx)).unwrap_or_default();
+    let inherited = path
+        .parent()
+        .map(|p| inherited_at(p, &ctx))
+        .unwrap_or_default();
     visit(root, path, inherited, &ctx);
 }
 
@@ -370,7 +392,11 @@ fn inherited_at(path: &Path, ctx: &Context) -> Owner {
             owner = found;
         }
     }
-    if owner.covers_contents() { owner } else { Owner::None }
+    if owner.covers_contents() {
+        owner
+    } else {
+        Owner::None
+    }
 }
 
 fn visit(entry: &mut Entry, path: &Path, inherited: Owner, ctx: &Context) {
@@ -395,7 +421,11 @@ fn visit(entry: &mut Entry, path: &Path, inherited: Owner, ctx: &Context) {
     let files_inherit = pass_down.covers_contents() || ctx.db.is_empty();
     entry.children.par_iter_mut().for_each(|child| {
         if child.kind != Kind::Dir && files_inherit {
-            child.owner = if pass_down.covers_contents() { pass_down } else { Owner::None };
+            child.owner = if pass_down.covers_contents() {
+                pass_down
+            } else {
+                Owner::None
+            };
         } else {
             visit(child, &path.join(&child.name), pass_down, ctx);
         }
@@ -452,7 +482,7 @@ pub fn ranking(dir: &Entry) -> Vec<(Owner, u64)> {
     }
     walk(dir, &mut totals);
     let mut list: Vec<(Owner, u64)> = totals.into_iter().collect();
-    list.sort_by(|a, b| b.1.cmp(&a.1));
+    list.sort_by_key(|&(_, bytes)| Reverse(bytes));
     list
 }
 
@@ -479,12 +509,22 @@ mod tests {
         .unwrap();
         let other = db_dir.join("glibc-2.40-1");
         fs::create_dir_all(&other).unwrap();
-        fs::write(other.join("files"), "%FILES%\nusr/\nusr/bin/\nusr/bin/ldd\n").unwrap();
+        fs::write(
+            other.join("files"),
+            "%FILES%\nusr/\nusr/bin/\nusr/bin/ldd\n",
+        )
+        .unwrap();
 
         let db = PackageDb::load_pacman(&db_dir);
         let firefox = intern("firefox");
-        assert_eq!(db.lookup(Path::new("/usr/bin/firefox")), Some(Claim::One(firefox)));
-        assert_eq!(db.lookup(Path::new("/usr/lib/firefox/libxul.so")), Some(Claim::One(firefox)));
+        assert_eq!(
+            db.lookup(Path::new("/usr/bin/firefox")),
+            Some(Claim::One(firefox))
+        );
+        assert_eq!(
+            db.lookup(Path::new("/usr/lib/firefox/libxul.so")),
+            Some(Claim::One(firefox))
+        );
         assert_eq!(db.lookup(Path::new("/usr/bin")), Some(Claim::Many(2)));
         // Backup entries are not part of %FILES%.
         assert_eq!(db.lookup(Path::new("/etc/firefox.conf")), None);
@@ -494,20 +534,43 @@ mod tests {
     #[test]
     fn reads_dpkg_databases() {
         let db_dir = temp("dpkg");
-        fs::write(db_dir.join("coreutils.list"), "/.\n/usr\n/usr/bin\n/usr/bin/ls\n").unwrap();
-        fs::write(db_dir.join("libc6:amd64.list"), "/.\n/usr\n/usr/lib/libc.so.6\n").unwrap();
+        fs::write(
+            db_dir.join("coreutils.list"),
+            "/.\n/usr\n/usr/bin\n/usr/bin/ls\n",
+        )
+        .unwrap();
+        fs::write(
+            db_dir.join("libc6:amd64.list"),
+            "/.\n/usr\n/usr/lib/libc.so.6\n",
+        )
+        .unwrap();
         let db = PackageDb::load_dpkg(&db_dir);
-        assert_eq!(db.lookup(Path::new("/usr/bin/ls")), Some(Claim::One(intern("coreutils"))));
-        assert_eq!(db.lookup(Path::new("/usr/lib/libc.so.6")), Some(Claim::One(intern("libc6"))));
+        assert_eq!(
+            db.lookup(Path::new("/usr/bin/ls")),
+            Some(Claim::One(intern("coreutils")))
+        );
+        assert_eq!(
+            db.lookup(Path::new("/usr/lib/libc.so.6")),
+            Some(Claim::One(intern("libc6")))
+        );
         assert_eq!(db.lookup(Path::new("/usr")), Some(Claim::Many(2)));
         fs::remove_dir_all(db_dir).unwrap();
     }
 
     #[test]
     fn pacman_folder_names() {
-        assert_eq!(pacman_name(Path::new("/x/firefox-131.0.3-1")).as_deref(), Some("firefox"));
-        assert_eq!(pacman_name(Path::new("/x/lib32-gcc-libs-14.2.1-1")).as_deref(), Some("lib32-gcc-libs"));
-        assert_eq!(pacman_name(Path::new("/x/python-3.12.7-1")).as_deref(), Some("python"));
+        assert_eq!(
+            pacman_name(Path::new("/x/firefox-131.0.3-1")).as_deref(),
+            Some("firefox")
+        );
+        assert_eq!(
+            pacman_name(Path::new("/x/lib32-gcc-libs-14.2.1-1")).as_deref(),
+            Some("lib32-gcc-libs")
+        );
+        assert_eq!(
+            pacman_name(Path::new("/x/python-3.12.7-1")).as_deref(),
+            Some("python")
+        );
     }
 
     #[test]
@@ -515,16 +578,34 @@ mod tests {
         let home = Path::new("/home/me");
         let h = Some(home);
         let label = |p: &str| rule(Path::new(p), h).map(Owner::label);
-        assert_eq!(label("/home/me/.cache/mozilla").as_deref(), Some("cache:mozilla"));
-        assert_eq!(label("/home/me/.config/nvim").as_deref(), Some("config:nvim"));
-        assert_eq!(label("/home/me/.local/share/Steam").as_deref(), Some("steam"));
+        assert_eq!(
+            label("/home/me/.cache/mozilla").as_deref(),
+            Some("cache:mozilla")
+        );
+        assert_eq!(
+            label("/home/me/.config/nvim").as_deref(),
+            Some("config:nvim")
+        );
+        assert_eq!(
+            label("/home/me/.local/share/Steam").as_deref(),
+            Some("steam")
+        );
         assert_eq!(
             label("/home/me/.local/share/Steam/steamapps/common/Portal 2").as_deref(),
             Some("steam:Portal 2")
         );
-        assert_eq!(label("/home/me/.var/app/org.gimp.GIMP").as_deref(), Some("flatpak:org.gimp.GIMP"));
-        assert_eq!(label("/home/me/.local/share/Trash").as_deref(), Some("trash"));
-        assert_eq!(label("/home/me/.minecraft").as_deref(), Some("data:minecraft"));
+        assert_eq!(
+            label("/home/me/.var/app/org.gimp.GIMP").as_deref(),
+            Some("flatpak:org.gimp.GIMP")
+        );
+        assert_eq!(
+            label("/home/me/.local/share/Trash").as_deref(),
+            Some("trash")
+        );
+        assert_eq!(
+            label("/home/me/.minecraft").as_deref(),
+            Some("data:minecraft")
+        );
         assert_eq!(label("/var/lib/docker").as_deref(), Some("docker"));
         assert_eq!(label("/home/me/Documents"), None);
         assert_eq!(label("/home/me/.config"), None);
@@ -538,15 +619,24 @@ mod tests {
         fs::write(root.join("app/src/main.rs"), "fn main() {}").unwrap();
         fs::write(root.join("notes.txt"), "hi").unwrap();
 
-        let opts = crate::scan::ScanOptions { one_filesystem: true, include: Vec::new() };
-        let mut tree = crate::scan::scan(&root, opts, &Default::default()).unwrap().unwrap();
+        let opts = crate::scan::ScanOptions {
+            one_filesystem: true,
+            include: Vec::new(),
+        };
+        let mut tree = crate::scan::scan(&root, opts, &Default::default())
+            .unwrap()
+            .unwrap();
         assign(&mut tree, &root);
 
         let app = tree.children.iter().find(|c| c.name == "app").unwrap();
         assert_eq!(app.owner.label(), "git:app");
         let src = app.children.iter().find(|c| c.name == "src").unwrap();
         assert_eq!(src.children[0].owner.label(), "git:app");
-        let notes = tree.children.iter().find(|c| c.name == "notes.txt").unwrap();
+        let notes = tree
+            .children
+            .iter()
+            .find(|c| c.name == "notes.txt")
+            .unwrap();
         assert!(!notes.owner.covers_contents());
         fs::remove_dir_all(root).unwrap();
     }

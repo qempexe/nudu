@@ -105,7 +105,10 @@ mod tests {
         assert_eq!(Category::of(OsStr::new("trip.MKV")), Category::Video);
         assert_eq!(Category::of(OsStr::new("song.flac")), Category::Audio);
         assert_eq!(Category::of(OsStr::new("main.rs")), Category::Code);
-        assert_eq!(Category::of(OsStr::new("backup.tar.gz")), Category::Archives);
+        assert_eq!(
+            Category::of(OsStr::new("backup.tar.gz")),
+            Category::Archives
+        );
         assert_eq!(Category::of(OsStr::new("Makefile")), Category::Other);
         assert_eq!(Category::of(OsStr::new(".bashrc")), Category::Other);
     }

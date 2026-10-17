@@ -98,7 +98,11 @@ enum Next {
 }
 
 /// Scan with live progress, then browse the result.
-fn run(terminal: &mut ratatui::DefaultTerminal, args: &Args, path: PathBuf) -> std::io::Result<Next> {
+fn run(
+    terminal: &mut ratatui::DefaultTerminal,
+    args: &Args,
+    path: PathBuf,
+) -> std::io::Result<Next> {
     let opts = ScanOptions {
         one_filesystem: !args.cross_fs,
         include: Vec::new(),
@@ -108,7 +112,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal, args: &Args, path: PathBuf) -> s
         scanning::Outcome::Cancelled => return Ok(Next::Exit),
         // Say which path failed, not just "No such file or directory".
         scanning::Outcome::Failed(e) => {
-            return Err(std::io::Error::new(e.kind(), format!("{}: {e}", path.display())));
+            return Err(std::io::Error::new(
+                e.kind(),
+                format!("{}: {e}", path.display()),
+            ));
         }
     };
     let fs = FsInfo::for_path(&path);

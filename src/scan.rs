@@ -11,6 +11,7 @@
 //! decides whether it is still the same filesystem (a btrfs subvolume like
 //! `/home`) or something to skip (another disk, `/proc`, snapshots).
 
+use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
@@ -139,7 +140,9 @@ impl Progress {
 /// What to do at a filesystem boundary.
 enum Crossing {
     /// Go in. `other_fs` names the filesystem if it differs from the start.
-    Scan { other_fs: Option<String> },
+    Scan {
+        other_fs: Option<String>,
+    },
     Skip(Skipped),
 }
 
@@ -269,7 +272,9 @@ impl Walker<'_> {
         if same {
             Crossing::Scan { other_fs: None }
         } else if !self.opts.one_filesystem || self.opts.include.iter().any(|p| p == path) {
-            Crossing::Scan { other_fs: Some(mount.fs_type.clone()) }
+            Crossing::Scan {
+                other_fs: Some(mount.fs_type.clone()),
+            }
         } else {
             Crossing::Skip(Skipped::OtherFs(mount_usage(path, &mount.fs_type)))
         }
@@ -335,7 +340,7 @@ impl Walker<'_> {
         dir.ages = Some(Box::new(ages));
 
         // Biggest first: the default order.
-        dir.children.sort_by(|a, b| b.disk.cmp(&a.disk));
+        dir.children.sort_by_key(|c| Reverse(c.disk));
     }
 
     fn mark_error(&self, dir: &mut Entry) {

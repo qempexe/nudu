@@ -65,7 +65,9 @@ impl MountTable {
             };
             // Later lines are mounted on top of earlier ones at the same
             // point, so the last one wins.
-            table.by_point.insert(mount.point.clone(), table.mounts.len());
+            table
+                .by_point
+                .insert(mount.point.clone(), table.mounts.len());
             table.mounts.push(mount);
         }
         table
@@ -112,7 +114,11 @@ impl MountTable {
     pub fn added_since(&self, before: &MountTable) -> Vec<Drive> {
         self.drives()
             .into_iter()
-            .filter(|d| before.at(&d.mount.point).is_none_or(|old| old.dev != d.mount.dev))
+            .filter(|d| {
+                before
+                    .at(&d.mount.point)
+                    .is_none_or(|old| old.dev != d.mount.dev)
+            })
             .collect()
     }
 
@@ -231,14 +237,23 @@ mod tests {
         let t = table();
         assert_eq!(t.at(Path::new("/home")).unwrap().fs_type, "btrfs");
         assert!(t.at(Path::new("/home/me")).is_none());
-        assert_eq!(t.containing(Path::new("/home/me/x")).unwrap().point, Path::new("/home"));
-        assert_eq!(t.containing(Path::new("/usr/lib")).unwrap().point, Path::new("/"));
+        assert_eq!(
+            t.containing(Path::new("/home/me/x")).unwrap().point,
+            Path::new("/home")
+        );
+        assert_eq!(
+            t.containing(Path::new("/usr/lib")).unwrap().point,
+            Path::new("/")
+        );
     }
 
     #[test]
     fn unescapes_spaces_in_mount_points() {
         let t = table();
-        assert_eq!(t.at(Path::new("/home/me/My Drive")).unwrap().fs_type, "ext4");
+        assert_eq!(
+            t.at(Path::new("/home/me/My Drive")).unwrap().fs_type,
+            "ext4"
+        );
     }
 
     #[test]
@@ -246,7 +261,10 @@ mod tests {
         let t = table();
         let root = t.at(Path::new("/")).unwrap();
         assert!(same_filesystem(root, t.at(Path::new("/home")).unwrap()));
-        assert!(same_filesystem(root, t.at(Path::new("/.snapshots")).unwrap()));
+        assert!(same_filesystem(
+            root,
+            t.at(Path::new("/.snapshots")).unwrap()
+        ));
     }
 
     #[test]
@@ -262,22 +280,50 @@ mod tests {
         let t = table();
         let root = t.at(Path::new("/")).unwrap();
         for other in ["/boot", "/proc", "/tmp", "/home/me/My Drive"] {
-            assert!(!same_filesystem(root, t.at(Path::new(other)).unwrap()), "{other}");
+            assert!(
+                !same_filesystem(root, t.at(Path::new(other)).unwrap()),
+                "{other}"
+            );
         }
     }
 
     #[test]
     fn tmpfs_mounts_are_not_merged_by_name() {
-        let a = Mount { point: "/tmp".into(), fs_type: "tmpfs".into(), source: "tmpfs".into(), dev: "0:30".into() };
-        let b = Mount { point: "/run".into(), fs_type: "tmpfs".into(), source: "tmpfs".into(), dev: "0:31".into() };
+        let a = Mount {
+            point: "/tmp".into(),
+            fs_type: "tmpfs".into(),
+            source: "tmpfs".into(),
+            dev: "0:30".into(),
+        };
+        let b = Mount {
+            point: "/run".into(),
+            fs_type: "tmpfs".into(),
+            source: "tmpfs".into(),
+            dev: "0:31".into(),
+        };
         assert!(!same_filesystem(&a, &b));
     }
 
     #[test]
     fn zfs_datasets_of_one_pool_belong_together() {
-        let a = Mount { point: "/".into(), fs_type: "zfs".into(), source: "tank/root".into(), dev: "0:40".into() };
-        let b = Mount { point: "/home".into(), fs_type: "zfs".into(), source: "tank/home".into(), dev: "0:41".into() };
-        let c = Mount { point: "/data".into(), fs_type: "zfs".into(), source: "other/data".into(), dev: "0:42".into() };
+        let a = Mount {
+            point: "/".into(),
+            fs_type: "zfs".into(),
+            source: "tank/root".into(),
+            dev: "0:40".into(),
+        };
+        let b = Mount {
+            point: "/home".into(),
+            fs_type: "zfs".into(),
+            source: "tank/home".into(),
+            dev: "0:41".into(),
+        };
+        let c = Mount {
+            point: "/data".into(),
+            fs_type: "zfs".into(),
+            source: "other/data".into(),
+            dev: "0:42".into(),
+        };
         assert!(same_filesystem(&a, &b));
         assert!(!same_filesystem(&a, &c));
     }
@@ -288,7 +334,14 @@ mod tests {
         let points: Vec<_> = drives.iter().map(|d| d.mount.point.clone()).collect();
         // btrfs shows once (at /, with /home and /.snapshots folded in),
         // proc and tmpfs are not drives.
-        assert_eq!(points, [PathBuf::from("/"), "/boot".into(), "/home/me/My Drive".into()]);
+        assert_eq!(
+            points,
+            [
+                PathBuf::from("/"),
+                "/boot".into(),
+                "/home/me/My Drive".into()
+            ]
+        );
         assert_eq!(drives[0].extra_mounts, 2);
     }
 

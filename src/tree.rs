@@ -105,7 +105,10 @@ mod tests {
 
     /// root/{a/{x 10, y 20}, b 5}
     fn tree() -> Entry {
-        dir("root", vec![dir("a", vec![file("x", 10), file("y", 20)]), file("b", 5)])
+        dir(
+            "root",
+            vec![dir("a", vec![file("x", 10), file("y", 20)]), file("b", 5)],
+        )
     }
 
     #[test]

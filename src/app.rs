@@ -15,10 +15,10 @@ use crate::mounts::{Drive, MountTable};
 use crate::owners::{self, Owner};
 use crate::scan::{self, Entry, Kind, MountUsage, ScanOptions, Skipped};
 use crate::scanning;
-use crate::tree;
-use crate::units::human_size;
 use crate::sort::{Sort, SortKey};
+use crate::tree;
 use crate::ui;
+use crate::units::human_size;
 
 /// One row of the browser: either the `..` link or a real entry.
 pub enum Row<'a> {
@@ -45,7 +45,10 @@ pub enum Job {
     /// it by itself (a drive was unmounted).
     Rescan { reason: Option<String> },
     /// Start over in another place, like a drive picked from the list.
-    OpenRoot { path: PathBuf, reason: Option<String> },
+    OpenRoot {
+        path: PathBuf,
+        reason: Option<String>,
+    },
 }
 
 /// The drives popup: every mounted disk, with how full it is.
@@ -212,7 +215,10 @@ impl App {
     /// Maps a child index back to the list row showing it.
     fn row_of(&self, index: usize) -> Option<usize> {
         let offset = usize::from(self.has_parent_row());
-        self.order.iter().position(|&i| i == index).map(|p| p + offset)
+        self.order
+            .iter()
+            .position(|&i| i == index)
+            .map(|p| p + offset)
     }
 
     /// Path of the open directory with the home folder shortened to `~`.
@@ -259,7 +265,10 @@ impl App {
         *self.list.offset_mut() = 0;
         self.select_row(row);
         match self.cold {
-            Some(cold) => self.note(&format!("Cold view: data older than {}", cold.label()), false),
+            Some(cold) => self.note(
+                &format!("Cold view: data older than {}", cold.label()),
+                false,
+            ),
             None => self.note("Cold view off", false),
         }
     }
@@ -371,7 +380,11 @@ impl App {
             .collect();
         let mut list = ListState::default();
         // Keep the cursor where it was if the popup was already open.
-        let keep = self.drives.as_ref().and_then(|v| v.list.selected()).unwrap_or(0);
+        let keep = self
+            .drives
+            .as_ref()
+            .and_then(|v| v.list.selected())
+            .unwrap_or(0);
         if !drives.is_empty() {
             list.select(Some(keep.min(drives.len() - 1)));
         }
@@ -384,7 +397,9 @@ impl App {
         let len = view.drives.len();
         let at = view.list.selected().unwrap_or(0);
         match code {
-            KeyCode::Down | KeyCode::Char('j') if len > 0 => view.list.select(Some((at + 1).min(len - 1))),
+            KeyCode::Down | KeyCode::Char('j') if len > 0 => {
+                view.list.select(Some((at + 1).min(len - 1)))
+            }
             KeyCode::Up | KeyCode::Char('k') => view.list.select(Some(at.saturating_sub(1))),
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                 if let Some((drive, _)) = view.drives.get(at) {
@@ -419,9 +434,9 @@ impl App {
         if let Some(view) = &mut self.owners_view {
             let at = view.list.selected().unwrap_or(0);
             match key.code {
-                KeyCode::Down | KeyCode::Char('j') => {
-                    view.list.select(Some((at + 1).min(view.rows.len().saturating_sub(1))))
-                }
+                KeyCode::Down | KeyCode::Char('j') => view
+                    .list
+                    .select(Some((at + 1).min(view.rows.len().saturating_sub(1)))),
                 KeyCode::Up | KeyCode::Char('k') => view.list.select(Some(at.saturating_sub(1))),
                 _ => self.owners_view = None,
             }
@@ -484,8 +499,11 @@ impl App {
     /// Selects `row`, or nothing if the list is empty.
     fn select_row(&mut self, row: usize) {
         let len = self.row_count();
-        self.list
-            .select(if len == 0 { None } else { Some(row.min(len - 1)) });
+        self.list.select(if len == 0 {
+            None
+        } else {
+            Some(row.min(len - 1))
+        });
     }
 
     /// Changes the sort and keeps the cursor on the same entry.
@@ -506,8 +524,12 @@ impl App {
             self.note("Read-only mode: deleting is turned off.", true);
             return;
         }
-        let Some(row) = self.list.selected() else { return };
-        let Some(index) = self.child_index(row) else { return };
+        let Some(row) = self.list.selected() else {
+            return;
+        };
+        let Some(index) = self.child_index(row) else {
+            return;
+        };
         if self.child(index).skipped.is_some() {
             self.note("Mount points and snapshots can't be deleted here.", true);
             return;
@@ -536,7 +558,10 @@ impl App {
         let freed = human_size(outcome.freed);
         match outcome.error {
             None => self.note(&format!("Deleted {name} · freed {freed}"), false),
-            Some(e) => self.note(&format!("Could not delete all of {name}: {e} · freed {freed}"), true),
+            Some(e) => self.note(
+                &format!("Could not delete all of {name}: {e} · freed {freed}"),
+                true,
+            ),
         }
     }
 
@@ -549,12 +574,16 @@ impl App {
 
     /// Enter: descend into the selected directory, or go up on `..`.
     fn open_selected(&mut self) {
-        let Some(row) = self.list.selected() else { return };
+        let Some(row) = self.list.selected() else {
+            return;
+        };
         if row == 0 && self.has_parent_row() {
             self.go_up();
             return;
         }
-        let Some(index) = self.child_index(row) else { return };
+        let Some(index) = self.child_index(row) else {
+            return;
+        };
         let entry = &self.current_dir().children[index];
         if entry.kind != Kind::Dir {
             return;
@@ -571,7 +600,10 @@ impl App {
                 return;
             }
             Some(Skipped::Snapshots) => {
-                self.note("Snapshots are not scanned: they share data with your files.", true);
+                self.note(
+                    "Snapshots are not scanned: they share data with your files.",
+                    true,
+                );
                 return;
             }
         }
@@ -627,7 +659,10 @@ impl App {
         tree::replace_child(&mut self.root, &self.trail, index, scanned);
 
         self.enter(index);
-        self.note(&format!("Scanned {} ({fs_type}) · {size}", path.display()), false);
+        self.note(
+            &format!("Scanned {} ({fs_type}) · {size}", path.display()),
+            false,
+        );
         Ok(())
     }
 
@@ -727,7 +762,9 @@ impl App {
         self.refresh_order();
         self.select_row(0);
         self.job = Some(if self.current_path().exists() {
-            Job::Rescan { reason: Some(reason) }
+            Job::Rescan {
+                reason: Some(reason),
+            }
         } else {
             let path = self
                 .root_path
@@ -735,7 +772,10 @@ impl App {
                 .find(|p| p.exists())
                 .unwrap_or(std::path::Path::new("/"))
                 .to_path_buf();
-            Job::OpenRoot { path, reason: Some(reason) }
+            Job::OpenRoot {
+                path,
+                reason: Some(reason),
+            }
         });
     }
 

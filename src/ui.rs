@@ -13,18 +13,22 @@
 //!
 //! Colors are the terminal's own ANSI palette, so nudu follows your theme.
 
+use std::cmp::Reverse;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, HighlightSpacing, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Clear, HighlightSpacing, List, ListItem, Paragraph, Wrap,
+};
 
-use crate::app::{App, Row};
-use crate::scanning::Snapshot;
 use crate::age::{self, Bucket};
+use crate::app::{App, Row};
 use crate::filetype::Category;
 use crate::owners::Owner;
 use crate::scan::{Entry, Kind, Skipped};
+use crate::scanning::Snapshot;
 use crate::units::{group_digits, human_size, relative_time};
 
 /// Main accent color (bars, badge, key hints).
@@ -82,10 +86,16 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
     let [left, right] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(fs_width)]).areas(area);
 
-    let mut spans = vec![Span::styled(" nudu ", Style::new().fg(Color::Black).bg(ACCENT).bold())];
+    let mut spans = vec![Span::styled(
+        " nudu ",
+        Style::new().fg(Color::Black).bg(ACCENT).bold(),
+    )];
     if app.is_root {
         // A clear reminder that deletes (and everything else) run as root.
-        spans.push(Span::styled(" root ", Style::new().fg(Color::Black).bg(Color::Red).bold()));
+        spans.push(Span::styled(
+            " root ",
+            Style::new().fg(Color::Black).bg(Color::Red).bold(),
+        ));
     }
     spans.push(Span::raw("  "));
     spans.extend(breadcrumb(&app.display_path()));
@@ -153,7 +163,7 @@ fn block_gauge(ratio: f64, width: usize) -> String {
     let mut out = "█".repeat(full);
     if full < width {
         out.push_str(PARTS[eighths % 8]);
-        let used = full + usize::from(eighths % 8 > 0);
+        let used = full + usize::from(!eighths.is_multiple_of(8));
         out.push_str(&" ".repeat(width - used));
     }
     out
@@ -167,8 +177,14 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
         // Cold view: how much old data is in here.
         Some(cold) => Line::from(vec![
             Span::raw(" "),
-            Span::styled(human_size(app.size_of(dir)), Style::new().fg(Bucket::Older.color()).bold()),
-            Span::styled(format!(" older than {} ", cold.label()), Style::new().fg(MUTED)),
+            Span::styled(
+                human_size(app.size_of(dir)),
+                Style::new().fg(Bucket::Older.color()).bold(),
+            ),
+            Span::styled(
+                format!(" older than {} ", cold.label()),
+                Style::new().fg(MUTED),
+            ),
         ]),
         None => Line::from(vec![
             Span::raw(" "),
@@ -180,7 +196,10 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let arrow = if app.sort.descending() { "↓" } else { "↑" };
     let sort_label = Line::from(vec![
         Span::styled(" sort ", Style::new().fg(MUTED)),
-        Span::styled(format!("{} {arrow} ", app.sort.key.label()), Style::new().fg(ACCENT)),
+        Span::styled(
+            format!("{} {arrow} ", app.sort.key.label()),
+            Style::new().fg(ACCENT),
+        ),
     ])
     .right_aligned();
     let mut block = pane(title).title(sort_label);
@@ -199,7 +218,12 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
         (0, inner.saturating_sub(2 + 1 + 10 + 1 + 4))
     };
 
-    let largest = dir.children.iter().map(|e| app.size_of(e)).max().unwrap_or(0);
+    let largest = dir
+        .children
+        .iter()
+        .map(|e| app.size_of(e))
+        .max()
+        .unwrap_or(0);
     let style = RowStyle {
         icons: app.settings.icons,
         heat: app.heat,
@@ -273,14 +297,24 @@ struct RowStyle {
 
 /// `size` is what the size column shows: space on disk, or the cold part.
 fn entry_item(entry: &Entry, size: u64, style: &RowStyle) -> ListItem<'static> {
-    let RowStyle { icons, heat, owners, name_width, bar_width, largest, total } = *style;
+    let RowStyle {
+        icons,
+        heat,
+        owners,
+        name_width,
+        bar_width,
+        largest,
+        total,
+    } = *style;
     let (icon, icon_color) = icon_for(entry, icons);
     // Skipped folders carry a short tag like `vfat` or `snapshots`.
     let tag = match (&entry.skipped, &entry.other_fs) {
         (Some(skipped), _) => skipped_tag(skipped),
         (None, Some(fs)) => fs.clone(),
         (None, None) if owners && entry.owner != Owner::None => {
-            fit(&entry.owner.label(), (name_width / 2).max(8)).trim_end().to_string()
+            fit(&entry.owner.label(), (name_width / 2).max(8))
+                .trim_end()
+                .to_string()
         }
         (None, None) => String::new(),
     };
@@ -289,7 +323,11 @@ fn entry_item(entry: &Entry, size: u64, style: &RowStyle) -> ListItem<'static> {
     } else {
         Color::Yellow
     };
-    let tag_width = if tag.is_empty() { 0 } else { tag.chars().count() + 1 };
+    let tag_width = if tag.is_empty() {
+        0
+    } else {
+        tag.chars().count() + 1
+    };
     let mut name = fit(
         &entry.name.to_string_lossy(),
         name_width.saturating_sub(tag_width),
@@ -323,9 +361,15 @@ fn entry_item(entry: &Entry, size: u64, style: &RowStyle) -> ListItem<'static> {
         spans.push(Span::styled(track, Style::new().fg(MUTED)));
     }
     let last = if heat {
-        Span::styled(format!(" {:>4}", age::short(entry.mtime)), Style::new().fg(bucket.color()))
+        Span::styled(
+            format!(" {:>4}", age::short(entry.mtime)),
+            Style::new().fg(bucket.color()),
+        )
     } else {
-        Span::styled(format!(" {:>4}", percent(size, total)), Style::new().fg(MUTED))
+        Span::styled(
+            format!(" {:>4}", percent(size, total)),
+            Style::new().fg(MUTED),
+        )
     };
     spans.push(last);
     ListItem::new(Line::from(spans))
@@ -370,7 +414,11 @@ fn line_bar(ratio: f64, width: usize) -> (String, String) {
 }
 
 fn ratio(part: u64, whole: u64) -> f64 {
-    if whole == 0 { 0.0 } else { part as f64 / whole as f64 }
+    if whole == 0 {
+        0.0
+    } else {
+        part as f64 / whole as f64
+    }
 }
 
 /// `68%`, `<1%`, or blank for an empty folder.
@@ -406,7 +454,10 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
     let width = area.width.saturating_sub(4) as usize;
     let (title, lines) = match app.selected_row() {
         None => ("empty".to_string(), vec![]),
-        Some(Row::Parent) => ("..".to_string(), vec![field("Action", "go up one level".into())]),
+        Some(Row::Parent) => (
+            "..".to_string(),
+            vec![field("Action", "go up one level".into())],
+        ),
         Some(Row::Entry(e)) => (
             e.name.to_string_lossy().into_owned(),
             entry_details(e, app, width + 2),
@@ -414,7 +465,10 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
     };
     let title = Line::from(vec![
         Span::raw(" "),
-        Span::styled(fit(&title, width).trim_end().to_string(), Style::new().bold()),
+        Span::styled(
+            fit(&title, width).trim_end().to_string(),
+            Style::new().bold(),
+        ),
         Span::raw(" "),
     ]);
     // Wrap long values instead of cutting them off at the border.
@@ -475,7 +529,11 @@ fn entry_details(e: &Entry, app: &App, width: usize) -> Vec<Line<'static>> {
     // Share of the open folder, as a bar.
     let share = ratio(e.disk, app.current_dir().disk);
     lines.push(Line::default());
-    lines.push(heading("Share of folder", Some(percent(e.disk, app.current_dir().disk)), width));
+    lines.push(heading(
+        "Share of folder",
+        Some(percent(e.disk, app.current_dir().disk)),
+        width,
+    ));
     let (fill, track) = line_bar(share, width.saturating_sub(1));
     lines.push(Line::from(vec![
         Span::raw(" "),
@@ -517,7 +575,10 @@ fn by_age(e: &Entry, width: usize) -> Vec<Line<'static>> {
                 Span::raw(format!("{:>10} ", human_size(bytes))),
                 Span::styled(fill, Style::new().fg(bucket.color())),
                 Span::styled(track, Style::new().fg(MUTED)),
-                Span::styled(format!(" {:>4}", percent(bytes, all)), Style::new().fg(MUTED)),
+                Span::styled(
+                    format!(" {:>4}", percent(bytes, all)),
+                    Style::new().fg(MUTED),
+                ),
             ])
         })
         .collect()
@@ -542,7 +603,10 @@ fn savings_line(e: &Entry) -> Option<Line<'static>> {
     if e.disk > e.apparent && e.disk - e.apparent >= MIB && e.disk - e.apparent > e.apparent / 10 {
         return Some(Line::from(vec![
             Span::styled(format!(" {:<11}", "Overhead"), Style::new().fg(MUTED)),
-            Span::styled(human_size(e.disk - e.apparent), Style::new().fg(Color::Yellow)),
+            Span::styled(
+                human_size(e.disk - e.apparent),
+                Style::new().fg(Color::Yellow),
+            ),
             Span::styled(" small files", Style::new().fg(MUTED)),
         ]));
     }
@@ -590,7 +654,7 @@ fn heading(title: &str, right: Option<String>, width: usize) -> Line<'static> {
 /// The five largest entries inside a folder, so you can peek without opening it.
 fn biggest_inside(e: &Entry, icons: bool, width: usize) -> Vec<Line<'static>> {
     let mut top: Vec<&Entry> = e.children.iter().collect();
-    top.sort_by(|a, b| b.disk.cmp(&a.disk));
+    top.sort_by_key(|c| Reverse(c.disk));
     top.truncate(5);
     let largest = top.first().map(|c| c.disk).unwrap_or(0);
     // [ icon ][name…][ size][ bar]
@@ -620,19 +684,25 @@ fn by_type(e: &Entry, icons: bool, width: usize) -> Vec<Line<'static>> {
         .map(|&c| (c, totals[c as usize]))
         .filter(|&(_, bytes)| bytes > 0)
         .collect();
-    rows.sort_by(|a, b| b.1.cmp(&a.1));
+    rows.sort_by_key(|&(_, bytes)| Reverse(bytes));
     // [ icon ][label    ][ size][ bar][ pct]
     let bar_width = width.saturating_sub(1 + 2 + 10 + 10 + 1 + 5).max(1);
     rows.into_iter()
         .map(|(category, bytes)| {
             let (fill, track) = line_bar(ratio(bytes, all), bar_width);
             Line::from(vec![
-                Span::styled(format!(" {} ", category.icon(icons)), Style::new().fg(MUTED)),
+                Span::styled(
+                    format!(" {} ", category.icon(icons)),
+                    Style::new().fg(MUTED),
+                ),
                 Span::raw(format!("{:<10}", category.label())),
                 Span::raw(format!("{:>10} ", human_size(bytes))),
                 Span::styled(fill, Style::new().fg(ACCENT)),
                 Span::styled(track, Style::new().fg(MUTED)),
-                Span::styled(format!(" {:>4}", percent(bytes, all)), Style::new().fg(MUTED)),
+                Span::styled(
+                    format!(" {:>4}", percent(bytes, all)),
+                    Style::new().fg(MUTED),
+                ),
             ])
         })
         .collect()
@@ -643,11 +713,18 @@ fn skipped_details(skipped: &Skipped) -> Vec<Line<'static>> {
     let note = |text: &str| Line::styled(format!(" {text}"), Style::new().fg(MUTED));
     match skipped {
         Skipped::OtherFs(usage) => {
-            let ratio = if usage.total == 0 { 0.0 } else { usage.used as f64 / usage.total as f64 };
+            let ratio = if usage.total == 0 {
+                0.0
+            } else {
+                usage.used as f64 / usage.total as f64
+            };
             vec![
                 field("Type", "Mounted drive".into()),
                 field("Filesystem", usage.fs_type.clone()),
-                field("Used", format!("{} of {}", human_size(usage.used), human_size(usage.total))),
+                field(
+                    "Used",
+                    format!("{} of {}", human_size(usage.used), human_size(usage.total)),
+                ),
                 Line::from(vec![
                     Span::raw(" "),
                     Span::styled(block_gauge(ratio, 20), Style::new().fg(ACCENT)),
@@ -689,7 +766,11 @@ fn field_wrapped(label: &str, value: &str, width: usize, style: Style) -> Vec<Li
         .into_iter()
         .enumerate()
         .map(|(i, chunk)| {
-            let lead = if i == 0 { format!(" {label:<11}") } else { " ".repeat(LABEL) };
+            let lead = if i == 0 {
+                format!(" {label:<11}")
+            } else {
+                " ".repeat(LABEL)
+            };
             Line::from(vec![
                 Span::styled(lead, Style::new().fg(MUTED)),
                 Span::styled(chunk, style),
@@ -712,7 +793,13 @@ fn wrap_value(text: &str, room: usize) -> Vec<String> {
             .map(|i| i + 1)
             .filter(|&i| i > room / 3) // don't leave a tiny first piece
             .unwrap_or(room);
-        chunks.push(rest[..cut].iter().collect::<String>().trim_end().to_string());
+        chunks.push(
+            rest[..cut]
+                .iter()
+                .collect::<String>()
+                .trim_end()
+                .to_string(),
+        );
         rest = rest[cut..].to_vec();
     }
     chunks.push(rest.into_iter().collect());
@@ -732,7 +819,11 @@ fn field(label: &str, value: String) -> Line<'static> {
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     // The result of the last action replaces the hints until the next key.
     if let Some(msg) = &app.message {
-        let (mark, color) = if msg.error { ("!", Color::Red) } else { ("✓", Color::Green) };
+        let (mark, color) = if msg.error {
+            ("!", Color::Red)
+        } else {
+            ("✓", Color::Green)
+        };
         let line = Line::from(vec![
             Span::styled(format!(" {mark} "), Style::new().fg(color).bold()),
             Span::styled(msg.text.clone(), Style::new().fg(color)),
@@ -815,8 +906,8 @@ fn draw_help(frame: &mut Frame) {
         lines.push(Line::from(spans));
     }
     let title = Line::from(Span::styled(" keys ", Style::new().bold()));
-    let hint = Line::from(Span::styled(" any key to close ", Style::new().fg(MUTED)))
-        .right_aligned();
+    let hint =
+        Line::from(Span::styled(" any key to close ", Style::new().fg(MUTED))).right_aligned();
 
     // Clear wipes what is underneath so the popup doesn't show through.
     frame.render_widget(Clear, area);
@@ -844,7 +935,9 @@ fn owner_color(owner: Owner) -> Color {
 
 /// Who uses the most space in the open folder.
 fn draw_owners(frame: &mut Frame, app: &mut App) {
-    let Some(view) = &mut app.owners_view else { return };
+    let Some(view) = &mut app.owners_view else {
+        return;
+    };
     let width = 72u16.min(frame.area().width);
     let height = (view.rows.len() as u16 + 4).clamp(6, frame.area().height.saturating_sub(2));
     let area = centered(frame.area(), width, height);
@@ -860,21 +953,33 @@ fn draw_owners(frame: &mut Frame, app: &mut App) {
         .map(|&(owner, bytes)| {
             let (fill, track) = line_bar(ratio(bytes, largest), bar_width);
             ListItem::new(Line::from(vec![
-                Span::styled(fit(&owner.label(), name_width), Style::new().fg(owner_color(owner))),
+                Span::styled(
+                    fit(&owner.label(), name_width),
+                    Style::new().fg(owner_color(owner)),
+                ),
                 Span::raw(format!(" {:>10} ", human_size(bytes))),
                 Span::styled(fill, Style::new().fg(owner_color(owner))),
                 Span::styled(track, Style::new().fg(MUTED)),
-                Span::styled(format!(" {:>4}", percent(bytes, view.total)), Style::new().fg(MUTED)),
+                Span::styled(
+                    format!(" {:>4}", percent(bytes, view.total)),
+                    Style::new().fg(MUTED),
+                ),
             ]))
         })
         .collect();
 
     let title = Line::from(vec![
         Span::styled(" owners ", Style::new().bold()),
-        Span::styled(format!("in {} ", fit_left(&view.folder, 30)), Style::new().fg(MUTED)),
+        Span::styled(
+            format!("in {} ", fit_left(&view.folder, 30)),
+            Style::new().fg(MUTED),
+        ),
     ]);
     let hint = Line::from(vec![
-        Span::styled(format!(" {} owners · ", view.rows.len()), Style::new().fg(MUTED)),
+        Span::styled(
+            format!(" {} owners · ", view.rows.len()),
+            Style::new().fg(MUTED),
+        ),
         Span::styled("↑↓ ", Style::new().fg(ACCENT).bold()),
         Span::styled("scroll · any other key closes ", Style::new().fg(MUTED)),
     ])
@@ -906,22 +1011,38 @@ fn draw_drives(frame: &mut Frame, app: &mut App) {
         .drives
         .iter()
         .map(|(drive, usage)| {
-            let ratio = if usage.total == 0 { 0.0 } else { usage.used as f64 / usage.total as f64 };
+            let ratio = if usage.total == 0 {
+                0.0
+            } else {
+                usage.used as f64 / usage.total as f64
+            };
             let mut point = crate::units::shorten_home(&drive.mount.point);
             if drive.extra_mounts > 0 {
                 point.push_str(&format!(" +{}", drive.extra_mounts));
             }
-            let color = if ratio >= 0.9 { Color::Red } else if ratio >= 0.75 { Color::Yellow } else { ACCENT };
+            let color = if ratio >= 0.9 {
+                Color::Red
+            } else if ratio >= 0.75 {
+                Color::Yellow
+            } else {
+                ACCENT
+            };
             ListItem::new(Line::from(vec![
                 Span::styled(if icons { "󰋊 " } else { "# " }, Style::new().fg(ACCENT)),
                 Span::styled(fit(&point, point_width), Style::new().bold()),
-                Span::styled(format!(" {:<11}", fit(&drive.mount.fs_type, 11)), Style::new().fg(Color::Yellow)),
+                Span::styled(
+                    format!(" {:<11}", fit(&drive.mount.fs_type, 11)),
+                    Style::new().fg(Color::Yellow),
+                ),
                 Span::raw(format!(
                     " {:>10} / {:<10}",
                     human_size(usage.used),
                     human_size(usage.total)
                 )),
-                Span::styled(format!(" {}", block_gauge(ratio, 10)), Style::new().fg(color)),
+                Span::styled(
+                    format!(" {}", block_gauge(ratio, 10)),
+                    Style::new().fg(color),
+                ),
             ]))
         })
         .collect();
@@ -958,9 +1079,17 @@ fn draw_confirm(frame: &mut Frame, app: &App, index: usize) {
         Line::default(),
         Line::from(vec![
             Span::styled(format!("  {icon} "), Style::new().fg(icon_color)),
-            Span::styled(fit(&entry.name.to_string_lossy(), inner).trim_end().to_string(), Style::new().bold()),
+            Span::styled(
+                fit(&entry.name.to_string_lossy(), inner)
+                    .trim_end()
+                    .to_string(),
+                Style::new().bold(),
+            ),
         ]),
-        Line::styled(format!("  {}", fit_left(&path, inner)), Style::new().fg(MUTED)),
+        Line::styled(
+            format!("  {}", fit_left(&path, inner)),
+            Style::new().fg(MUTED),
+        ),
         Line::default(),
         field("  Size", format!("{} on disk", human_size(entry.disk))),
     ];
@@ -976,17 +1105,35 @@ fn draw_confirm(frame: &mut Frame, app: &App, index: usize) {
             _ => format!("your package manager ({package})"),
         };
         lines.push(Line::default());
-        lines.push(Line::styled(format!("  Installed by package {package}."), Style::new().fg(Color::Yellow)));
-        lines.push(Line::styled("  Better to remove it with:", Style::new().fg(Color::Yellow)));
-        lines.push(Line::styled(format!("  {command}"), Style::new().fg(Color::Yellow).bold()));
+        lines.push(Line::styled(
+            format!("  Installed by package {package}."),
+            Style::new().fg(Color::Yellow),
+        ));
+        lines.push(Line::styled(
+            "  Better to remove it with:",
+            Style::new().fg(Color::Yellow),
+        ));
+        lines.push(Line::styled(
+            format!("  {command}"),
+            Style::new().fg(Color::Yellow).bold(),
+        ));
     } else if let Owner::Packages(n) = entry.owner {
         lines.push(Line::default());
-        lines.push(Line::styled(format!("  Holds files of {n} packages."), Style::new().fg(Color::Yellow)));
+        lines.push(Line::styled(
+            format!("  Holds files of {n} packages."),
+            Style::new().fg(Color::Yellow),
+        ));
     }
     lines.push(Line::default());
-    lines.push(Line::styled("  This cannot be undone.", Style::new().fg(Color::Red).bold()));
+    lines.push(Line::styled(
+        "  This cannot be undone.",
+        Style::new().fg(Color::Red).bold(),
+    ));
     if app.is_root {
-        lines.push(Line::styled("  Running as root: nothing is protected.", Style::new().fg(Color::Red)));
+        lines.push(Line::styled(
+            "  Running as root: nothing is protected.",
+            Style::new().fg(Color::Red),
+        ));
     }
     lines.push(Line::default());
 
@@ -1012,7 +1159,10 @@ fn draw_deleting(frame: &mut Frame, app: &App, index: usize) {
     let entry = app.child(index);
     let width = 44u16.min(frame.area().width);
     let area = centered(frame.area(), width, 5);
-    let name = fit(&entry.name.to_string_lossy(), width.saturating_sub(8) as usize);
+    let name = fit(
+        &entry.name.to_string_lossy(),
+        width.saturating_sub(8) as usize,
+    );
     let lines = vec![
         Line::default(),
         Line::from(vec![
@@ -1020,7 +1170,10 @@ fn draw_deleting(frame: &mut Frame, app: &App, index: usize) {
             Span::raw(name.trim_end().to_string()),
         ]),
     ];
-    let title = Line::from(Span::styled(" deleting ", Style::new().fg(Color::Red).bold()));
+    let title = Line::from(Span::styled(
+        " deleting ",
+        Style::new().fg(Color::Red).bold(),
+    ));
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(lines).block(pane(title)), area);
 }
@@ -1050,20 +1203,31 @@ pub fn draw_scanning(frame: &mut Frame, s: &Snapshot) {
     let area = centered(main, width, 11);
 
     let secs = s.elapsed.as_secs_f64();
-    let rate = if secs > 0.2 { (s.items as f64 / secs) as u64 } else { 0 };
+    let rate = if secs > 0.2 {
+        (s.items as f64 / secs) as u64
+    } else {
+        0
+    };
     let frame_no = (s.elapsed.as_millis() / 100) as usize % SPINNER.len();
 
     let mut lines = vec![
         Line::default(),
         Line::from(vec![
-            Span::styled(format!("  {}  ", SPINNER[frame_no]), Style::new().fg(ACCENT).bold()),
+            Span::styled(
+                format!("  {}  ", SPINNER[frame_no]),
+                Style::new().fg(ACCENT).bold(),
+            ),
             Span::raw(fit_left(&s.current, inner)),
         ]),
         Line::default(),
         stat("Items", group_digits(s.items), Style::new()),
         stat("Size", human_size(s.bytes), Style::new()),
         stat("Elapsed", format!("{secs:.1} s"), Style::new()),
-        stat("Speed", format!("{} items/s", group_digits(rate)), Style::new()),
+        stat(
+            "Speed",
+            format!("{} items/s", group_digits(rate)),
+            Style::new(),
+        ),
     ];
     if s.errors > 0 {
         let red = Style::new().fg(Color::Red);
@@ -1072,7 +1236,10 @@ pub fn draw_scanning(frame: &mut Frame, s: &Snapshot) {
 
     let title = Line::from(Span::styled(" scanning ", Style::new().bold()));
     let hint = Line::from(Span::styled(" esc to cancel ", Style::new().fg(MUTED))).right_aligned();
-    frame.render_widget(Paragraph::new(lines).block(pane(title).title_bottom(hint)), area);
+    frame.render_widget(
+        Paragraph::new(lines).block(pane(title).title_bottom(hint)),
+        area,
+    );
 }
 
 /// `   Label       value`, indented to line up under the spinner.
@@ -1147,8 +1314,14 @@ mod tests {
     #[test]
     fn wraps_long_values_at_natural_breaks() {
         assert_eq!(wrap_value("pacman:firefox", 20), ["pacman:firefox"]);
-        assert_eq!(wrap_value("pacman:docker-desktop", 19), ["pacman:docker-", "desktop"]);
-        assert_eq!(wrap_value("flatpak:org.gimp.GIMP", 12), ["flatpak:org.", "gimp.GIMP"]);
+        assert_eq!(
+            wrap_value("pacman:docker-desktop", 19),
+            ["pacman:docker-", "desktop"]
+        );
+        assert_eq!(
+            wrap_value("flatpak:org.gimp.GIMP", 12),
+            ["flatpak:org.", "gimp.GIMP"]
+        );
         // No good break point: cut at the edge.
         assert_eq!(wrap_value("abcdefghij", 4), ["abcd", "efgh", "ij"]);
     }

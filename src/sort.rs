@@ -132,7 +132,10 @@ mod tests {
     #[test]
     fn sorts_by_each_key() {
         let e = [entry("b", 10, 3), entry("C", 30, 1), entry("a", 20, 2)];
-        let by = |key| Sort { key, reverse: false };
+        let by = |key| Sort {
+            key,
+            reverse: false,
+        };
         assert_eq!(names(&e, by(SortKey::Size)), ["C", "a", "b"]);
         assert_eq!(names(&e, by(SortKey::Name)), ["a", "b", "C"]);
         assert_eq!(names(&e, by(SortKey::Modified)), ["b", "a", "C"]);
@@ -143,6 +146,12 @@ mod tests {
         let s = Sort::default().toggle(SortKey::Size);
         assert!(s.reverse);
         let s = s.toggle(SortKey::Name);
-        assert_eq!(s, Sort { key: SortKey::Name, reverse: false });
+        assert_eq!(
+            s,
+            Sort {
+                key: SortKey::Name,
+                reverse: false
+            }
+        );
     }
 }

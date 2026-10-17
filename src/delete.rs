@@ -13,8 +13,8 @@ use std::io;
 use std::path::Path;
 
 use crate::mounts::MountTable;
-use crate::tree;
 use crate::scan::{self, Entry, Kind, Progress, ScanOptions};
+use crate::tree;
 
 /// What a delete did, for the status message.
 pub struct Outcome {
@@ -48,7 +48,10 @@ pub fn delete(
     match result {
         Ok(()) => {
             tree::remove_child(root, trail, index);
-            Outcome { freed: before, error: None }
+            Outcome {
+                freed: before,
+                error: None,
+            }
         }
         // Something is left (permissions, files in use...). Look again at
         // just this entry to learn what survived.
@@ -65,7 +68,10 @@ pub fn delete(
                     before
                 }
             };
-            Outcome { freed, error: Some(error) }
+            Outcome {
+                freed,
+                error: Some(error),
+            }
         }
     }
 }
@@ -123,7 +129,10 @@ mod tests {
         fs::write(base.join("junk/deep/file"), vec![0u8; 50_000]).unwrap();
         fs::write(base.join("keep/file"), vec![0u8; 10_000]).unwrap();
 
-        let opts = ScanOptions { one_filesystem: true, include: Vec::new() };
+        let opts = ScanOptions {
+            one_filesystem: true,
+            include: Vec::new(),
+        };
         let progress = Progress::default();
         let mut root = scan::scan(&base, opts.clone(), &progress).unwrap().unwrap();
         let junk = root.children.iter().position(|c| c.name == "junk").unwrap();
