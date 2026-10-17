@@ -39,12 +39,14 @@ pub struct App {
     pub show_help: bool,
     /// Set to true to leave the event loop.
     pub should_quit: bool,
+    /// Running with root rights.
+    pub is_root: bool,
+    /// The user asked to rescan with sudo; main() restarts nudu after quitting.
+    pub relaunch_sudo: bool,
     /// Type and fullness of the scanned filesystem, for the header.
     pub fs: Option<FsInfo>,
     /// Draw Nerd Font icons (false = plain characters).
     pub icons: bool,
-    /// The user's home directory, shown as `~` in the breadcrumb.
-    pub home: Option<PathBuf>,
     /// "Now", fixed at startup, for "3 days ago" style times.
     pub now: i64,
 }
@@ -58,7 +60,6 @@ impl App {
         let mut app = Self {
             fs,
             icons,
-            home: std::env::var_os("HOME").map(PathBuf::from),
             now,
             root,
             root_path,
@@ -69,6 +70,8 @@ impl App {
             page_size: 1,
             show_help: false,
             should_quit: false,
+            is_root: crate::privilege::is_root(),
+            relaunch_sudo: false,
         };
         app.refresh_order();
         app.select_row(0);
@@ -133,21 +136,16 @@ impl App {
 
     /// Path of the open directory with the home folder shortened to `~`.
     pub fn display_path(&self) -> String {
-        let path = self.current_path();
-        if let Some(home) = &self.home
-            && let Ok(rest) = path.strip_prefix(home)
-        {
-            return if rest.as_os_str().is_empty() {
-                "~".into()
-            } else {
-                format!("~/{}", rest.display())
-            };
-        }
-        path.display().to_string()
+        crate::units::shorten_home(&self.current_path())
     }
 
     fn row_count(&self) -> usize {
         self.order.len() + usize::from(self.has_parent_row())
+    }
+
+    /// True when some folders were unreadable and sudo could help.
+    pub fn can_sudo(&self) -> bool {
+        self.root.error && !self.is_root
     }
 
     /// Recomputes the display order of the open directory.
@@ -179,6 +177,10 @@ impl App {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('S') if self.can_sudo() => {
+                self.relaunch_sudo = true;
+                self.should_quit = true;
+            }
             KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
             KeyCode::PageDown => self.move_by(page),
@@ -233,7 +235,9 @@ impl App {
             return;
         }
         let Some(index) = self.child_index(row) else { return };
-        if self.current_dir().children[index].kind != Kind::Dir {
+        let entry = &self.current_dir().children[index];
+        // Files can't be opened, and skipped folders were never read.
+        if entry.kind != Kind::Dir || entry.skipped.is_some() {
             return;
         }
         self.trail.push(index);

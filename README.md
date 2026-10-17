@@ -17,7 +17,9 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
 
 ## Features
 
-- **Fast scan** of any folder, staying on one filesystem by default
+- **Fast parallel scan** on all CPU cores, with a live progress screen (`Esc` cancels)
+- **Understands filesystems**: btrfs subvolumes (like `/home`) and ZFS datasets of one pool count as one filesystem,
+  other disks are labeled and skipped (`--cross-fs` includes them), `/proc`, `/sys` and btrfs snapshots are never double counted
 - **Real sizes**: both apparent size and space actually used on disk, hard links counted once
 - **Sorting** by size, name, item count or last change, in either direction
 - **Details pane** with type, sizes, share of the folder, item count and last change
@@ -27,7 +29,7 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
 ### Planned
 
 - **Owners**: see which package, app or repo a file belongs to
-- **Filesystem-aware sizes**: correct numbers on btrfs, zfs and friends
+- **btrfs-aware sizes**: compression savings and space shared with snapshots
 - **Age heat**: spot files you haven't touched in ages
 
 ## Install
@@ -37,10 +39,20 @@ Requires a recent stable Rust toolchain.
 ```sh
 git clone https://github.com/qempexe/nudu.git
 cd nudu
-cargo install --path .
+./install.sh
 ```
 
-This puts `nudu` in `~/.cargo/bin`. Make sure that folder is in your `PATH`.
+This builds nudu and installs it to `/usr/local/bin`, so both `nudu` and `sudo nudu` work.
+Remove it again with `./install.sh --uninstall`.
+
+Prefer a user-only install? `cargo install --path .` puts it in `~/.cargo/bin` instead
+(sudo won't find it there, but nudu can still restart itself as root, see below).
+
+### Folders you can't read
+
+Some folders belong to root or other users. nudu marks them with `!` and keeps going.
+Press `S` to rescan with sudo: nudu restarts itself as root with the same options.
+A red **root** badge in the header shows when it runs with root rights.
 
 ## Usage
 
@@ -49,6 +61,7 @@ nudu              # current folder
 nudu ~            # your home folder
 nudu / --cross-fs # everything, including other mounted filesystems
 nudu --no-icons   # plain characters if you don't use a Nerd Font
+nudu -t 4         # limit scanning to 4 threads
 ```
 
 | Key | Action |
@@ -58,6 +71,7 @@ nudu --no-icons   # plain characters if you don't use a Nerd Font
 | `Enter` / `→` / `l` | Open folder |
 | `←` / `h` / `<` | Back |
 | `s` `n` `c` `m` | Sort by size, name, item count, last modified (again to reverse) |
+| `S` | Rescan with sudo (when some folders were unreadable) |
 | `?` | Help |
 | `q` / `Esc` | Quit |
 

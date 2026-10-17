@@ -20,7 +20,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, HighlightSpacing, List, ListItem, Paragraph, Wrap};
 
 use crate::app::{App, Row};
-use crate::scan::{Entry, Kind};
+use crate::scanning::Snapshot;
+use crate::scan::{Entry, Kind, Skipped};
 use crate::units::{group_digits, human_size, relative_time};
 
 /// Main accent color (bars, badge, key hints).
@@ -51,7 +52,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_list(frame, main, app);
     }
 
-    draw_footer(frame, footer);
+    draw_footer(frame, footer, app);
 
     if app.show_help {
         draw_help(frame);
@@ -66,10 +67,12 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
     let [left, right] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(fs_width)]).areas(area);
 
-    let mut spans = vec![
-        Span::styled(" nudu ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
-        Span::raw("  "),
-    ];
+    let mut spans = vec![Span::styled(" nudu ", Style::new().fg(Color::Black).bg(ACCENT).bold())];
+    if app.is_root {
+        // A clear reminder that deletes (and everything else) run as root.
+        spans.push(Span::styled(" root ", Style::new().fg(Color::Black).bg(Color::Red).bold()));
+    }
+    spans.push(Span::raw("  "));
     spans.extend(breadcrumb(&app.display_path()));
     frame.render_widget(Line::from(spans), left);
     frame.render_widget(fs_line, right);
@@ -215,22 +218,32 @@ fn entry_item(
     total: u64,
 ) -> ListItem<'static> {
     let (icon, icon_color) = icon_for(entry, icons);
-    let mut name = fit(&entry.name.to_string_lossy(), name_width);
+    // Skipped folders carry a short tag like `vfat` or `snapshots`.
+    let tag = entry.skipped.as_ref().map(skipped_tag).unwrap_or_default();
+    let tag_width = if tag.is_empty() { 0 } else { tag.chars().count() + 1 };
+    let mut name = fit(
+        &entry.name.to_string_lossy(),
+        name_width.saturating_sub(tag_width),
+    );
     if entry.error {
         // Swap the last padding space for a warning mark.
         name.pop();
         name.push('!');
     }
-    let name_style = match entry.kind {
-        Kind::Dir => Style::new().bold(),
+    let name_style = match (&entry.skipped, entry.kind) {
+        (Some(_), _) => Style::new().fg(MUTED),
+        (None, Kind::Dir) => Style::new().bold(),
         _ => Style::new(),
     };
 
     let mut spans = vec![
         Span::styled(format!("{icon} "), Style::new().fg(icon_color)),
         Span::styled(name, name_style),
-        Span::raw(format!(" {:>10}", human_size(entry.disk))),
     ];
+    if !tag.is_empty() {
+        spans.push(Span::styled(format!(" {tag}"), Style::new().fg(Color::Yellow)));
+    }
+    spans.push(Span::raw(format!(" {:>10}", human_size(entry.disk))));
     if bar_width > 0 {
         let (fill, track) = line_bar(ratio(entry.disk, largest), bar_width);
         spans.push(Span::raw(" "));
@@ -246,6 +259,13 @@ fn entry_item(
 
 /// Icon and its color. Nerd Font glyphs, or plain characters with --no-icons.
 fn icon_for(entry: &Entry, icons: bool) -> (&'static str, Color) {
+    if let Some(skipped) = &entry.skipped {
+        return match (skipped, icons) {
+            (Skipped::Snapshots, true) => ("󰁯", Color::Yellow),
+            (_, true) => ("󰋊", Color::Yellow),
+            (_, false) => ("#", Color::Yellow),
+        };
+    }
     match (entry.kind, icons) {
         (Kind::Dir, true) => ("󰉋", ACCENT),
         (Kind::File, true) => ("󰈔", MUTED),
@@ -326,7 +346,18 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(details, area);
 }
 
+/// The short label shown after a skipped folder's name.
+fn skipped_tag(skipped: &Skipped) -> String {
+    match skipped {
+        Skipped::OtherFs(fs) | Skipped::Virtual(fs) => fs.clone(),
+        Skipped::Snapshots => "snapshots".into(),
+    }
+}
+
 fn entry_details(e: &Entry, app: &App) -> Vec<Line<'static>> {
+    if let Some(skipped) = &e.skipped {
+        return skipped_details(skipped);
+    }
     let kind = match e.kind {
         Kind::Dir => "Directory",
         Kind::File => "File",
@@ -345,13 +376,17 @@ fn entry_details(e: &Entry, app: &App) -> Vec<Line<'static>> {
     lines.push(field("Modified", relative_time(app.now, e.mtime)));
     if e.error {
         // Short lines that fit the pane; each one stands on its own.
-        let (what, hints): (&str, &[&str]) = if e.kind == Kind::Dir {
-            (
-                "Some items are unreadable",
-                &["Sizes may be too low.", "Run with sudo to see all."],
-            )
+        let what = if e.kind == Kind::Dir {
+            "Some items are unreadable"
         } else {
-            ("Could not be read", &["Run with sudo to see it."])
+            "Could not be read"
+        };
+        let hints: &[&str] = if app.is_root {
+            &["Not readable even as root."]
+        } else if e.kind == Kind::Dir {
+            &["Sizes may be too low.", "Press S to rescan with sudo."]
+        } else {
+            &["Press S to rescan with sudo."]
         };
         lines.push(Line::default());
         lines.push(Line::from(vec![
@@ -365,25 +400,51 @@ fn entry_details(e: &Entry, app: &App) -> Vec<Line<'static>> {
     lines
 }
 
+/// What the details pane says about a folder that was not scanned.
+fn skipped_details(skipped: &Skipped) -> Vec<Line<'static>> {
+    let (kind, fs, why): (&str, String, &[&str]) = match skipped {
+        Skipped::OtherFs(fs) => (
+            "Mount point",
+            fs.clone(),
+            &["Another filesystem.", "Not scanned: use --cross-fs", "to include it."],
+        ),
+        Skipped::Virtual(fs) => (
+            "Mount point",
+            fs.clone(),
+            &["Kernel filesystem with no", "real files. Never scanned."],
+        ),
+        Skipped::Snapshots => (
+            "Snapshots",
+            "btrfs".into(),
+            &["Snapshots share data with", "your files, so counting them", "would double your totals."],
+        ),
+    };
+    let mut lines = vec![field("Type", kind.into()), field("Filesystem", fs), Line::default()];
+    lines.extend(why.iter().map(|w| Line::styled(format!(" {w}"), Style::new().fg(MUTED))));
+    lines
+}
+
 /// ` Label     value`
 fn field(label: &str, value: String) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!(" {label:<10}"), Style::new().fg(MUTED)),
+        Span::styled(format!(" {label:<11}"), Style::new().fg(MUTED)),
         Span::raw(value),
     ])
 }
 
 // ── Footer ──────────────────────────────────────────────────────────────────
 
-fn draw_footer(frame: &mut Frame, area: Rect) {
-    let hints = [
+fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
+    let mut hints = vec![
         ("↑↓", "move"),
         ("⏎", "open"),
         ("←", "back"),
         ("s n c m", "sort"),
-        ("?", "help"),
-        ("q", "quit"),
     ];
+    if app.can_sudo() {
+        hints.push(("S", "sudo"));
+    }
+    hints.extend([("?", "help"), ("q", "quit")]);
     let mut spans = vec![Span::raw(" ")];
     for (key, label) in hints {
         spans.push(Span::styled(key, Style::new().fg(ACCENT).bold()));
@@ -407,6 +468,7 @@ const HELP: &[(&str, &str)] = &[
     ("m", "sort by last modified"),
     ("", "press again to reverse"),
     ("", ""),
+    ("S", "rescan with sudo"),
     ("?", "this help"),
     ("q Esc", "quit"),
 ];
@@ -433,6 +495,74 @@ fn draw_help(frame: &mut Frame) {
         Paragraph::new(lines).block(pane(title).title_bottom(hint)),
         area,
     );
+}
+
+// ── Scanning screen ─────────────────────────────────────────────────────────
+
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// The screen shown while a scan runs.
+pub fn draw_scanning(frame: &mut Frame, s: &Snapshot) {
+    let [header, main, _] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
+
+    let mut spans = vec![
+        Span::styled(" nudu ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
+        Span::styled("  scanning ", Style::new().fg(MUTED)),
+    ];
+    spans.extend(breadcrumb(&s.path));
+    frame.render_widget(Line::from(spans), header);
+
+    let width = 60.min(main.width);
+    let inner = width.saturating_sub(8) as usize;
+    let area = centered(main, width, 11);
+
+    let secs = s.elapsed.as_secs_f64();
+    let rate = if secs > 0.2 { (s.items as f64 / secs) as u64 } else { 0 };
+    let frame_no = (s.elapsed.as_millis() / 100) as usize % SPINNER.len();
+
+    let mut lines = vec![
+        Line::default(),
+        Line::from(vec![
+            Span::styled(format!("  {}  ", SPINNER[frame_no]), Style::new().fg(ACCENT).bold()),
+            Span::raw(fit_left(&s.current, inner)),
+        ]),
+        Line::default(),
+        stat("Items", group_digits(s.items), Style::new()),
+        stat("Size", human_size(s.bytes), Style::new()),
+        stat("Elapsed", format!("{secs:.1} s"), Style::new()),
+        stat("Speed", format!("{} items/s", group_digits(rate)), Style::new()),
+    ];
+    if s.errors > 0 {
+        let red = Style::new().fg(Color::Red);
+        lines.push(stat("Unreadable", group_digits(s.errors), red));
+    }
+
+    let title = Line::from(Span::styled(" scanning ", Style::new().bold()));
+    let hint = Line::from(Span::styled(" esc to cancel ", Style::new().fg(MUTED))).right_aligned();
+    frame.render_widget(Paragraph::new(lines).block(pane(title).title_bottom(hint)), area);
+}
+
+/// `   Label       value`, indented to line up under the spinner.
+fn stat(label: &str, value: String, style: Style) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("   {label:<12}"), Style::new().fg(MUTED)),
+        Span::styled(value, style),
+    ])
+}
+
+/// Keeps the end of a long path: `…/steamapps/common/Game`.
+fn fit_left(text: &str, width: usize) -> String {
+    let len = text.chars().count();
+    if len <= width || width == 0 {
+        return text.to_string();
+    }
+    let tail: String = text.chars().skip(len - (width - 1)).collect();
+    format!("…{tail}")
 }
 
 /// A `width` x `height` rectangle in the middle of `area`.

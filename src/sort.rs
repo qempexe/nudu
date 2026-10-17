@@ -112,6 +112,7 @@ mod tests {
             mtime,
             items: 0,
             error: false,
+            skipped: None,
             children: Vec::new(),
         }
     }

@@ -1,5 +1,7 @@
 //! Human-readable formatting helpers.
 
+use std::path::Path;
+
 const UNITS: [&str; 7] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
 
 /// Formats a byte count: `12 B`, `512.0 KiB`, `1.4 GiB`.
@@ -14,6 +16,20 @@ pub fn human_size(bytes: u64) -> String {
         unit += 1;
     }
     format!("{value:.1} {}", UNITS[unit])
+}
+
+/// Shows a path with the home folder shortened to `~`.
+pub fn shorten_home(path: &Path) -> String {
+    if let Some(home) = crate::privilege::user_home()
+        && let Ok(rest) = path.strip_prefix(home)
+    {
+        return if rest.as_os_str().is_empty() {
+            "~".into()
+        } else {
+            format!("~/{}", rest.display())
+        };
+    }
+    path.display().to_string()
 }
 
 /// Groups digits in threes with a thin space: `412204` -> `412 204`.
