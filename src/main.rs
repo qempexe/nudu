@@ -1,4 +1,6 @@
+mod app;
 mod scan;
+mod ui;
 mod units;
 
 use std::path::PathBuf;
@@ -6,8 +8,8 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use scan::{Kind, ScanOptions};
-use units::human_size;
+use app::App;
+use scan::ScanOptions;
 
 /// nudu - disk usage analyzer in the spirit of ncdu
 #[derive(Parser, Debug)]
@@ -28,6 +30,8 @@ fn main() -> ExitCode {
         one_filesystem: !args.cross_fs,
     };
 
+    // Scan before touching the terminal, so errors print normally.
+    eprintln!("Scanning {} ...", args.path.display());
     let root = match scan::scan(&args.path, opts) {
         Ok(root) => root,
         Err(e) => {
@@ -36,21 +40,18 @@ fn main() -> ExitCode {
         }
     };
 
-    // Temporary text output until the TUI lands.
-    println!(
-        "{}  total {}  ({} items)",
-        args.path.display(),
-        human_size(root.disk),
-        root.items
-    );
-    for child in root.children.iter().take(15) {
-        let slash = if child.kind == Kind::Dir { "/" } else { "" };
-        println!(
-            "{:>10}  {}{slash}",
-            human_size(child.disk),
-            child.name.to_string_lossy()
-        );
-    }
+    // init() switches to the alternate screen and raw mode, and installs a
+    // panic hook that restores the terminal if anything crashes.
+    let mut terminal = ratatui::init();
+    let mut app = App::new(root, args.path);
+    let result = app.run(&mut terminal);
+    ratatui::restore();
 
-    ExitCode::SUCCESS
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("nudu: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
