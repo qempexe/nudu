@@ -8,6 +8,7 @@
 //! A `trail` is the list of child indexes from the root down to a folder,
 //! the same one app.rs keeps for navigation.
 
+use crate::filetype;
 use crate::scan::Entry;
 
 /// The folder at the end of `trail`, mutably.
@@ -18,10 +19,14 @@ pub fn folder_mut<'a>(root: &'a mut Entry, trail: &[usize]) -> &'a mut Entry {
 /// Removes a child and subtracts it from every folder on the way down.
 pub fn remove_child(root: &mut Entry, trail: &[usize], index: usize) -> Entry {
     let gone = folder_mut(root, trail).children.remove(index);
+    let gone_types = gone.type_totals();
     adjust(root, trail, |dir| {
         dir.apparent = dir.apparent.saturating_sub(gone.apparent);
         dir.disk = dir.disk.saturating_sub(gone.disk);
         dir.items = dir.items.saturating_sub(gone.items + 1);
+        if let Some(types) = &mut dir.types {
+            filetype::sub(types, &gone_types);
+        }
     });
     gone
 }
@@ -31,10 +36,15 @@ pub fn replace_child(root: &mut Entry, trail: &[usize], index: usize, new: Entry
     let old = std::mem::replace(&mut folder_mut(root, trail).children[index], new);
     let new = &folder_mut(root, trail).children[index];
     let (new_apparent, new_disk, new_items) = (new.apparent, new.disk, new.items);
+    let (old_types, new_types) = (old.type_totals(), new.type_totals());
     adjust(root, trail, |dir| {
         dir.apparent = dir.apparent.saturating_sub(old.apparent) + new_apparent;
         dir.disk = dir.disk.saturating_sub(old.disk) + new_disk;
         dir.items = dir.items.saturating_sub(old.items) + new_items;
+        if let Some(types) = &mut dir.types {
+            filetype::sub(types, &old_types);
+            filetype::add(types, &new_types);
+        }
     });
 }
 
@@ -64,6 +74,7 @@ mod tests {
             error: false,
             skipped: None,
             other_fs: None,
+            types: None,
             children: Vec::new(),
         }
     }
@@ -102,6 +113,22 @@ mod tests {
         remove_child(&mut root, &[], 0); // a and everything in it
         assert_eq!(root.disk, 5);
         assert_eq!(root.items, 1);
+    }
+
+    #[test]
+    fn type_totals_follow_a_delete() {
+        use crate::filetype::Category;
+        let mut root = dir("root", vec![file("movie.mkv", 100), file("notes.md", 5)]);
+        root.types = Some(Box::new({
+            let mut t = crate::filetype::TypeTotals::default();
+            t[Category::Video as usize] = 100;
+            t[Category::Documents as usize] = 5;
+            t
+        }));
+        remove_child(&mut root, &[], 0);
+        let t = root.type_totals();
+        assert_eq!(t[Category::Video as usize], 0);
+        assert_eq!(t[Category::Documents as usize], 5);
     }
 
     #[test]

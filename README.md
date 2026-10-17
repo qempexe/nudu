@@ -26,7 +26,8 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
 - **Real sizes**: both apparent size and space actually used on disk, hard links counted once
 - **Sorting** by size, name, item count or last change, in either direction
 - **Safe delete**: always asks first, removes what it can, never enters mounted drives, totals update instantly
-- **Details pane** with type, sizes, share of the folder, item count and last change
+- **Details pane** with sizes, space saved by compression or sparse files, share of the folder,
+  the biggest items inside a folder and a breakdown by type (video, images, code, archives...)
 - **Filesystem header** showing the filesystem type and how full it is
 - **Follows your terminal theme**: all colors come from your terminal's palette
 

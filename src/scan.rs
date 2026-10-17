@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rayon::prelude::*;
 
+use crate::filetype::{self, Category, TypeTotals};
 use crate::mounts::{self, Mount, MountTable};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +51,24 @@ pub struct Entry {
     /// Set on folders where another filesystem is mounted (its type,
     /// like `ext4`), whether we scanned into it or not.
     pub other_fs: Option<String>,
+    /// For folders: bytes on disk per kind of file, everything below.
+    /// Boxed so files, the vast majority of entries, stay small.
+    pub types: Option<Box<TypeTotals>>,
     pub children: Vec<Entry>,
+}
+
+impl Entry {
+    /// Bytes on disk per kind of file, for this entry and all below it.
+    pub fn type_totals(&self) -> TypeTotals {
+        if let Some(types) = &self.types {
+            return **types;
+        }
+        let mut totals = TypeTotals::default();
+        if self.kind != Kind::Dir {
+            totals[Category::of(&self.name) as usize] = self.disk;
+        }
+        totals
+    }
 }
 
 /// How full a mounted filesystem is, read without scanning it.
@@ -175,6 +193,7 @@ impl Walker<'_> {
             error: false,
             skipped: None,
             other_fs: None,
+            types: None,
             children: Vec::new(),
         };
 
@@ -265,6 +284,7 @@ impl Walker<'_> {
             }
         }
 
+        let mut types = TypeTotals::default();
         let results: Vec<Option<Entry>> = names
             .into_par_iter()
             .map(|name| {
@@ -285,8 +305,11 @@ impl Walker<'_> {
             dir.items += child.items + 1;
             dir.mtime = dir.mtime.max(child.mtime);
             dir.error |= child.error;
+            filetype::add(&mut types, &child.type_totals());
             dir.children.push(child);
         }
+
+        dir.types = Some(Box::new(types));
 
         // Biggest first: the default order.
         dir.children.sort_by(|a, b| b.disk.cmp(&a.disk));

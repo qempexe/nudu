@@ -21,6 +21,7 @@ use ratatui::widgets::{Block, BorderType, Clear, HighlightSpacing, List, ListIte
 
 use crate::app::{App, Row};
 use crate::scanning::Snapshot;
+use crate::filetype::Category;
 use crate::scan::{Entry, Kind, Skipped};
 use crate::units::{group_digits, human_size, relative_time};
 
@@ -348,7 +349,7 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
         Some(Row::Parent) => ("..".to_string(), vec![field("Action", "go up one level".into())]),
         Some(Row::Entry(e)) => (
             e.name.to_string_lossy().into_owned(),
-            entry_details(e, app),
+            entry_details(e, app, width + 2),
         ),
     };
     let title = Line::from(vec![
@@ -372,53 +373,171 @@ fn skipped_tag(skipped: &Skipped) -> String {
     }
 }
 
-fn entry_details(e: &Entry, app: &App) -> Vec<Line<'static>> {
+fn entry_details(e: &Entry, app: &App, width: usize) -> Vec<Line<'static>> {
     if let Some(skipped) = &e.skipped {
         return skipped_details(skipped);
     }
     let kind = match e.kind {
-        Kind::Dir => "Directory",
-        Kind::File => "File",
-        Kind::Symlink => "Symlink",
-        Kind::Other => "Special file",
+        Kind::Dir => "Directory".to_string(),
+        Kind::File => format!("File · {}", Category::of(&e.name).label()),
+        Kind::Symlink => "Symlink".into(),
+        Kind::Other => "Special file".into(),
     };
     let mut lines = vec![
-        field("Type", kind.into()),
+        field("Type", kind),
         field("Size", human_size(e.apparent)),
         field("On disk", human_size(e.disk)),
-        field("Share", format!("{} of folder", percent(e.disk, app.current_dir().disk))),
     ];
+    if let Some(line) = savings_line(e) {
+        lines.push(line);
+    }
     if e.kind == Kind::Dir {
         lines.push(field("Items", group_digits(e.items)));
     }
     if let Some(fs) = &e.other_fs {
-        lines.push(field("Filesystem", format!("{fs} (mounted drive)")));
+        lines.push(field("Filesystem", format!("{fs} (drive)")));
     }
     lines.push(field("Modified", relative_time(app.now, e.mtime)));
     if e.error {
-        // Short lines that fit the pane; each one stands on its own.
-        let what = if e.kind == Kind::Dir {
-            "Some items are unreadable"
-        } else {
-            "Could not be read"
-        };
-        let hints: &[&str] = if app.is_root {
-            &["Not readable even as root."]
-        } else if e.kind == Kind::Dir {
-            &["Sizes may be too low.", "Press S to rescan with sudo."]
-        } else {
-            &["Press S to rescan with sudo."]
-        };
+        lines.extend(error_lines(e, app));
+    }
+
+    // Share of the open folder, as a bar.
+    let share = ratio(e.disk, app.current_dir().disk);
+    lines.push(Line::default());
+    lines.push(heading("Share of folder", Some(percent(e.disk, app.current_dir().disk)), width));
+    let (fill, track) = line_bar(share, width.saturating_sub(1));
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        Span::styled(fill, Style::new().fg(ACCENT)),
+        Span::styled(track, Style::new().fg(MUTED)),
+    ]));
+
+    if e.kind == Kind::Dir && !e.children.is_empty() {
         lines.push(Line::default());
-        lines.push(Line::from(vec![
-            Span::styled(" ! ", Style::new().fg(Color::Red).bold()),
-            Span::styled(what, Style::new().fg(Color::Red)),
-        ]));
-        for hint in hints {
-            lines.push(Line::styled(format!("   {hint}"), Style::new().fg(MUTED)));
-        }
+        lines.push(heading("Biggest inside", None, width));
+        lines.extend(biggest_inside(e, app.settings.icons, width));
+
+        lines.push(Line::default());
+        lines.push(heading("By type", None, width));
+        lines.extend(by_type(e, app.settings.icons, width));
     }
     lines
+}
+
+/// `Saved  9.3 GiB · 26%` when the data takes less room than its size
+/// (compression, sparse files), or the opposite for lots of tiny files.
+fn savings_line(e: &Entry) -> Option<Line<'static>> {
+    const MIB: u64 = 1024 * 1024;
+    if e.apparent > e.disk && e.apparent - e.disk >= MIB.min(e.apparent / 100).max(1) {
+        let saved = e.apparent - e.disk;
+        return Some(Line::from(vec![
+            Span::styled(format!(" {:<11}", "Saved"), Style::new().fg(MUTED)),
+            Span::styled(
+                format!("{} · {}", human_size(saved), percent(saved, e.apparent)),
+                Style::new().fg(Color::Green),
+            ),
+        ]));
+    }
+    // Blocks are allocated whole, so many small files take more room
+    // than their sizes add up to. Only worth a mention when it's big.
+    if e.disk > e.apparent && e.disk - e.apparent >= MIB && e.disk - e.apparent > e.apparent / 10 {
+        return Some(Line::from(vec![
+            Span::styled(format!(" {:<11}", "Overhead"), Style::new().fg(MUTED)),
+            Span::styled(human_size(e.disk - e.apparent), Style::new().fg(Color::Yellow)),
+            Span::styled(" small files", Style::new().fg(MUTED)),
+        ]));
+    }
+    None
+}
+
+fn error_lines(e: &Entry, app: &App) -> Vec<Line<'static>> {
+    // Short lines that fit the pane; each one stands on its own.
+    let what = if e.kind == Kind::Dir {
+        "Some items are unreadable"
+    } else {
+        "Could not be read"
+    };
+    let hints: &[&str] = if app.is_root {
+        &["Not readable even as root."]
+    } else if e.kind == Kind::Dir {
+        &["Sizes may be too low.", "Press S to rescan with sudo."]
+    } else {
+        &["Press S to rescan with sudo."]
+    };
+    let mut lines = vec![
+        Line::default(),
+        Line::from(vec![
+            Span::styled(" ! ", Style::new().fg(Color::Red).bold()),
+            Span::styled(what, Style::new().fg(Color::Red)),
+        ]),
+    ];
+    for hint in hints {
+        lines.push(Line::styled(format!("   {hint}"), Style::new().fg(MUTED)));
+    }
+    lines
+}
+
+/// A section title, with an optional value pushed to the right edge.
+fn heading(title: &str, right: Option<String>, width: usize) -> Line<'static> {
+    let right = right.unwrap_or_default();
+    let gap = width.saturating_sub(title.chars().count() + right.chars().count() + 1);
+    Line::from(vec![
+        Span::styled(format!(" {title}"), Style::new().bold()),
+        Span::raw(" ".repeat(gap)),
+        Span::styled(right, Style::new().fg(MUTED)),
+    ])
+}
+
+/// The five largest entries inside a folder, so you can peek without opening it.
+fn biggest_inside(e: &Entry, icons: bool, width: usize) -> Vec<Line<'static>> {
+    let mut top: Vec<&Entry> = e.children.iter().collect();
+    top.sort_by(|a, b| b.disk.cmp(&a.disk));
+    top.truncate(5);
+    let largest = top.first().map(|c| c.disk).unwrap_or(0);
+    // [ icon ][name…][ size][ bar]
+    let bar_width = 6;
+    let name_width = width.saturating_sub(1 + 2 + 10 + 1 + bar_width);
+    top.into_iter()
+        .map(|child| {
+            let (icon, color) = icon_for(child, icons);
+            let (fill, track) = line_bar(ratio(child.disk, largest), bar_width);
+            Line::from(vec![
+                Span::styled(format!(" {icon} "), Style::new().fg(color)),
+                Span::raw(fit(&child.name.to_string_lossy(), name_width)),
+                Span::raw(format!("{:>10} ", human_size(child.disk))),
+                Span::styled(fill, Style::new().fg(ACCENT)),
+                Span::styled(track, Style::new().fg(MUTED)),
+            ])
+        })
+        .collect()
+}
+
+/// What kind of data a folder holds: video, images, code...
+fn by_type(e: &Entry, icons: bool, width: usize) -> Vec<Line<'static>> {
+    let totals = e.type_totals();
+    let all: u64 = totals.iter().sum();
+    let mut rows: Vec<(Category, u64)> = Category::ALL
+        .iter()
+        .map(|&c| (c, totals[c as usize]))
+        .filter(|&(_, bytes)| bytes > 0)
+        .collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1));
+    // [ icon ][label    ][ size][ bar][ pct]
+    let bar_width = width.saturating_sub(1 + 2 + 10 + 10 + 1 + 5).max(1);
+    rows.into_iter()
+        .map(|(category, bytes)| {
+            let (fill, track) = line_bar(ratio(bytes, all), bar_width);
+            Line::from(vec![
+                Span::styled(format!(" {} ", category.icon(icons)), Style::new().fg(MUTED)),
+                Span::raw(format!("{:<10}", category.label())),
+                Span::raw(format!("{:>10} ", human_size(bytes))),
+                Span::styled(fill, Style::new().fg(ACCENT)),
+                Span::styled(track, Style::new().fg(MUTED)),
+                Span::styled(format!(" {:>4}", percent(bytes, all)), Style::new().fg(MUTED)),
+            ])
+        })
+        .collect()
 }
 
 /// What the details pane says about a folder that was not scanned.

@@ -1,5 +1,6 @@
 mod app;
 mod delete;
+mod filetype;
 mod fsinfo;
 mod mounts;
 mod privilege;

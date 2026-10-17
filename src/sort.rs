@@ -114,6 +114,7 @@ mod tests {
             error: false,
             skipped: None,
             other_fs: None,
+            types: None,
             children: Vec::new(),
         }
     }
