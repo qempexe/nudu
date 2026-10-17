@@ -37,7 +37,7 @@ pub struct Entry {
 
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
-    /// Stay on the filesystem of the starting directory (like `ncdu -x`).
+    /// Stay on the filesystem of the starting directory (like `du -x`).
     pub one_filesystem: bool,
 }
 
@@ -119,7 +119,7 @@ impl Walker {
                 continue;
             };
             let child_path = item.path();
-            // symlink_metadata: never follow symlinks, just like ncdu.
+            // symlink_metadata: never follow symlinks, so nothing is counted twice.
             let Ok(meta) = fs::symlink_metadata(&child_path) else {
                 dir.error = true;
                 continue;
@@ -134,7 +134,7 @@ impl Walker {
             dir.children.push(child);
         }
 
-        // Biggest first: the default ncdu order.
+        // Biggest first: the default order.
         dir.children.sort_by(|a, b| b.disk.cmp(&a.disk));
     }
 }
