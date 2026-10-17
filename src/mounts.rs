@@ -73,6 +73,16 @@ impl MountTable {
         table
     }
 
+    /// The mount whose filesystem has device number `dev` (from `stat`).
+    ///
+    /// Not every filesystem can be found this way: btrfs gives each
+    /// subvolume an anonymous device number in `stat` that differs from
+    /// the one in mountinfo. Callers must treat `None` as "unknown".
+    pub fn by_device(&self, dev: u64) -> Option<&Mount> {
+        let id = format!("{}:{}", rustix::fs::major(dev), rustix::fs::minor(dev));
+        self.mounts.iter().rev().find(|m| m.dev == id)
+    }
+
     /// The mount whose mount point is exactly `path`, if any.
     pub fn at(&self, path: &Path) -> Option<&Mount> {
         self.by_point.get(path).map(|&i| &self.mounts[i])
@@ -167,6 +177,12 @@ pub fn same_filesystem(a: &Mount, b: &Mount) -> bool {
 
 fn pool(source: &str) -> &str {
     source.split('/').next().unwrap_or(source)
+}
+
+/// Filesystems that may not report how much disk space a file uses.
+/// Many FUSE filesystems (sshfs, rclone, ...) say 0 blocks for every file.
+pub fn may_lack_block_counts(fs_type: &str) -> bool {
+    fs_type.starts_with("fuse.")
 }
 
 /// Kernel filesystems that hold no real files: always skipped.
@@ -361,6 +377,30 @@ mod tests {
         let removed = without.removed_since(&with);
         assert_eq!(removed.len(), 1);
         assert!(without.added_since(&with).is_empty());
+    }
+
+    #[test]
+    fn finds_a_mount_by_device_number() {
+        // Uses the sample table, not this machine's: on btrfs, stat() gives
+        // each subvolume its own anonymous device number that no mountinfo
+        // line carries, so a test on the real root would depend on the host.
+        let t = table();
+        let proc_dev = rustix::fs::makedev(0, 22);
+        assert_eq!(t.by_device(proc_dev).unwrap().point, Path::new("/proc"));
+        let boot_dev = rustix::fs::makedev(259, 1);
+        assert_eq!(t.by_device(boot_dev).unwrap().fs_type, "vfat");
+        // A device nobody mounted (like a btrfs subvolume's anonymous one).
+        assert!(t.by_device(rustix::fs::makedev(0, 999)).is_none());
+    }
+
+    #[test]
+    fn only_fuse_may_lack_block_counts() {
+        assert!(may_lack_block_counts("fuse.sshfs"));
+        assert!(may_lack_block_counts("fuse.rclone"));
+        assert!(!may_lack_block_counts("ext4"));
+        assert!(!may_lack_block_counts("btrfs"));
+        // ntfs-3g mounts as `fuseblk` and does report blocks.
+        assert!(!may_lack_block_counts("fuseblk"));
     }
 
     #[test]

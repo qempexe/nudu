@@ -12,7 +12,7 @@
 //! `/home`) or something to skip (another disk, `/proc`, snapshots).
 
 use std::cmp::Reverse;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -61,6 +61,9 @@ pub struct Entry {
     pub ages: Option<Box<AgeTotals>>,
     /// Who this belongs to (filled in by owners.rs after the scan).
     pub owner: Owner,
+    /// True when `disk` is a guess (the file's size), because the
+    /// filesystem reports no block counts. Folders: true if any part is.
+    pub estimated: bool,
     pub children: Vec<Entry>,
 }
 
@@ -167,6 +170,8 @@ struct Walker<'a> {
     mounts: MountTable,
     /// The mount the scan started in.
     root_mount: Option<Mount>,
+    /// Per device: does its filesystem possibly not report block counts?
+    lacks_blocks: Mutex<HashMap<u64, bool>>,
     /// (device, inode) pairs of hard-linked files we have already counted.
     seen_links: Mutex<HashSet<(u64, u64)>>,
     progress: &'a Progress,
@@ -182,6 +187,7 @@ pub fn scan(path: &Path, opts: ScanOptions, progress: &Progress) -> std::io::Res
         root_mount: mounts.containing(path).cloned(),
         mounts,
         seen_links: Mutex::new(HashSet::new()),
+        lacks_blocks: Mutex::new(HashMap::new()),
         progress,
     };
     let name = path.as_os_str().to_owned();
@@ -190,6 +196,19 @@ pub fn scan(path: &Path, opts: ScanOptions, progress: &Progress) -> std::io::Res
 }
 
 impl Walker<'_> {
+    /// Looked up once per device, then remembered.
+    fn lacks_block_counts(&self, dev: u64) -> bool {
+        if let Some(&known) = self.lacks_blocks.lock().unwrap().get(&dev) {
+            return known;
+        }
+        let lacks = self
+            .mounts
+            .by_device(dev)
+            .is_some_and(|m| mounts::may_lack_block_counts(&m.fs_type));
+        self.lacks_blocks.lock().unwrap().insert(dev, lacks);
+        lacks
+    }
+
     /// `parent_dev` is the device of the folder containing `path`; a change
     /// of device means we are crossing into another mount or subvolume.
     fn visit(&self, path: &Path, name: OsString, meta: &fs::Metadata, parent_dev: u64) -> Entry {
@@ -217,8 +236,21 @@ impl Walker<'_> {
             types: None,
             ages: None,
             owner: Owner::None,
+            estimated: false,
             children: Vec::new(),
         };
+
+        // A file with data but no blocks is normally sparse (all holes),
+        // and 0 is right. But some FUSE filesystems report 0 blocks for
+        // every file; there, the file's size is the best estimate.
+        if kind == Kind::File
+            && entry.disk == 0
+            && entry.apparent > 0
+            && self.lacks_block_counts(meta.dev())
+        {
+            entry.disk = entry.apparent;
+            entry.estimated = true;
+        }
 
         // A file with several hard links shares one copy of its data.
         // Count it the first time we meet it, and as zero afterwards.
@@ -329,6 +361,7 @@ impl Walker<'_> {
             dir.apparent += child.apparent;
             dir.disk += child.disk;
             dir.items += child.items + 1;
+            dir.estimated |= child.estimated;
             dir.mtime = dir.mtime.max(child.mtime);
             dir.error |= child.error;
             filetype::add(&mut types, &child.type_totals());

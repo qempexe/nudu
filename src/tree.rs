@@ -87,6 +87,7 @@ mod tests {
             types: None,
             ages: None,
             owner: crate::owners::Owner::None,
+            estimated: false,
             children: Vec::new(),
         }
     }

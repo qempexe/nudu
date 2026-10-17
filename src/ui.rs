@@ -350,7 +350,9 @@ fn entry_item(entry: &Entry, size: u64, style: &RowStyle) -> ListItem<'static> {
     if !tag.is_empty() {
         spans.push(Span::styled(format!(" {tag}"), Style::new().fg(tag_color)));
     }
-    spans.push(Span::raw(format!(" {:>10}", human_size(size))));
+    // `≈` marks sizes guessed on filesystems without block counts.
+    let approx = if entry.estimated { "≈" } else { " " };
+    spans.push(Span::raw(format!("{approx}{:>10}", human_size(size))));
     // In heat mode, the bar is colored by how long ago this last changed.
     let bucket = Bucket::of(entry.mtime);
     let bar_color = if heat { bucket.color() } else { ACCENT };
@@ -500,8 +502,24 @@ fn entry_details(e: &Entry, app: &App, width: usize) -> Vec<Line<'static>> {
     let mut lines = vec![
         field("Type", kind),
         field("Size", human_size(e.apparent)),
-        field("On disk", human_size(e.disk)),
+        field(
+            "On disk",
+            if e.estimated {
+                format!("≈ {}", human_size(e.disk))
+            } else {
+                human_size(e.disk)
+            },
+        ),
     ];
+    if e.estimated {
+        // Under the value column, wrapped to fit the pane.
+        lines.extend(field_wrapped(
+            "",
+            "estimated: this drive doesn't report disk use",
+            width,
+            Style::new().fg(MUTED),
+        ));
+    }
     if let Some(line) = savings_line(e) {
         lines.push(line);
     }

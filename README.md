@@ -23,7 +23,8 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
 - **Mounted drives**: a drives list (`D`) with type and usage of every disk, see how full a drive is before
   scanning it, `Enter` scans it on demand, and when you plug something in nudu tells you where it was
   mounted (`g` jumps straight there)
-- **Real sizes**: both apparent size and space actually used on disk, hard links counted once
+- **Real sizes**: both apparent size and space actually used on disk, hard links counted once,
+  sparse files stay sparse, and on network/FUSE drives that don't report disk use (sshfs, rclone) sizes are estimated and marked `≈`
 - **Sorting** by size, name, item count or last change, in either direction
 - **Safe delete**: always asks first, removes what it can, never enters mounted drives, totals update instantly
 - **Details pane** with sizes, space saved by compression or sparse files, share of the folder,
