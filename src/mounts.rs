@@ -80,6 +80,66 @@ impl MountTable {
     pub fn containing(&self, path: &Path) -> Option<&Mount> {
         path.ancestors().find_map(|p| self.at(p))
     }
+
+    /// Real storage a person would call a drive: disks, partitions, USB
+    /// sticks, network shares. One row per filesystem, so a btrfs disk with
+    /// five subvolume mounts shows once, at its shortest mount point.
+    pub fn drives(&self) -> Vec<Drive> {
+        let mut drives: Vec<Drive> = Vec::new();
+        for (i, m) in self.mounts.iter().enumerate() {
+            // Skip mounts hidden under a later mount at the same point.
+            if self.by_point.get(&m.point) != Some(&i) || !is_drive(&m.fs_type) {
+                continue;
+            }
+            match drives.iter_mut().find(|d| same_filesystem(&d.mount, m)) {
+                Some(d) => {
+                    d.extra_mounts += 1;
+                    if m.point.as_os_str().len() < d.mount.point.as_os_str().len() {
+                        d.mount = m.clone();
+                    }
+                }
+                None => drives.push(Drive {
+                    mount: m.clone(),
+                    extra_mounts: 0,
+                }),
+            }
+        }
+        drives.sort_by(|a, b| a.mount.point.cmp(&b.mount.point));
+        drives
+    }
+
+    /// Drives in `self` that are not in `before`: what just got mounted.
+    pub fn added_since(&self, before: &MountTable) -> Vec<Drive> {
+        self.drives()
+            .into_iter()
+            .filter(|d| before.at(&d.mount.point).is_none_or(|old| old.dev != d.mount.dev))
+            .collect()
+    }
+
+    /// Drives in `before` that are gone from `self`.
+    pub fn removed_since(&self, before: &MountTable) -> Vec<Drive> {
+        before.added_since(self)
+    }
+}
+
+/// One filesystem in the drives list.
+#[derive(Debug, Clone)]
+pub struct Drive {
+    pub mount: Mount,
+    /// Other places the same filesystem is mounted (btrfs subvolumes...).
+    pub extra_mounts: usize,
+}
+
+/// True for filesystems that store real files on some device.
+fn is_drive(fs_type: &str) -> bool {
+    !is_virtual(fs_type)
+        && !matches!(
+            fs_type,
+            "tmpfs" | "devtmpfs" | "ramfs" | "overlay" | "squashfs" | "nsfs" | "tracefs"
+        )
+        // Desktop helper mounts, not storage.
+        && !fs_type.starts_with("fuse.portal")
+        && !fs_type.starts_with("fuse.gvfsd")
 }
 
 /// True when two mounts show parts of the same filesystem.
@@ -220,6 +280,34 @@ mod tests {
         let c = Mount { point: "/data".into(), fs_type: "zfs".into(), source: "other/data".into(), dev: "0:42".into() };
         assert!(same_filesystem(&a, &b));
         assert!(!same_filesystem(&a, &c));
+    }
+
+    #[test]
+    fn drives_list_one_row_per_filesystem() {
+        let drives = table().drives();
+        let points: Vec<_> = drives.iter().map(|d| d.mount.point.clone()).collect();
+        // btrfs shows once (at /, with /home and /.snapshots folded in),
+        // proc and tmpfs are not drives.
+        assert_eq!(points, [PathBuf::from("/"), "/boot".into(), "/home/me/My Drive".into()]);
+        assert_eq!(drives[0].extra_mounts, 2);
+    }
+
+    #[test]
+    fn notices_new_and_removed_drives() {
+        let without = MountTable::parse(SAMPLE);
+        let usb = "40 26 8:33 / /run/media/me/USB rw shared:9 - vfat /dev/sdc1 rw\n";
+        let with = MountTable::parse(&format!("{SAMPLE}{usb}"));
+
+        // Plugging it in: `with` is now, `without` is before.
+        let added = with.added_since(&without);
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].mount.point, Path::new("/run/media/me/USB"));
+        assert!(with.removed_since(&without).is_empty());
+
+        // Pulling it out: `without` is now, `with` is before.
+        let removed = without.removed_since(&with);
+        assert_eq!(removed.len(), 1);
+        assert!(without.added_since(&with).is_empty());
     }
 
     #[test]

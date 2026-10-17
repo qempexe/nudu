@@ -1,10 +1,12 @@
 mod app;
+mod delete;
 mod fsinfo;
 mod mounts;
 mod privilege;
 mod scan;
 mod scanning;
 mod sort;
+mod tree;
 mod ui;
 mod units;
 
@@ -13,7 +15,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use app::App;
+use app::{App, Settings};
 use fsinfo::FsInfo;
 use scan::ScanOptions;
 
@@ -32,6 +34,10 @@ struct Args {
     /// Plain characters instead of Nerd Font icons
     #[arg(long)]
     no_icons: bool,
+
+    /// Turn off deleting
+    #[arg(long, short = 'r')]
+    read_only: bool,
 
     /// Number of scanning threads (default: one per CPU core)
     #[arg(long, short = 't', value_name = "N")]
@@ -92,12 +98,18 @@ enum Next {
 fn run(terminal: &mut ratatui::DefaultTerminal, args: &Args, path: PathBuf) -> std::io::Result<Next> {
     let opts = ScanOptions {
         one_filesystem: !args.cross_fs,
+        include: Vec::new(),
     };
-    let Some(root) = scanning::run(terminal, &path, opts)? else {
+    let Some(root) = scanning::run(terminal, &path, opts.clone())? else {
         return Ok(Next::Exit); // cancelled
     };
     let fs = FsInfo::for_path(&path);
-    let mut app = App::new(root, path, fs, !args.no_icons);
+    let settings = Settings {
+        icons: !args.no_icons,
+        read_only: args.read_only,
+        scan: opts,
+    };
+    let mut app = App::new(root, path, fs, settings);
     app.run(terminal)?;
     Ok(if app.relaunch_sudo {
         Next::RelaunchWithSudo

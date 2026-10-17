@@ -113,6 +113,7 @@ mod tests {
             items: 0,
             error: false,
             skipped: None,
+            other_fs: None,
             children: Vec::new(),
         }
     }

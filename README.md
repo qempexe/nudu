@@ -12,7 +12,7 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
 │   󰉋 Trash             5.2 GiB ━━━━━━━━━━   6% ││ On disk   62.1 GiB             │
 │   󰈔 data.db         412.0 MiB ━━━━━━━━━━  <1% ││ Modified  3 days ago           │
 ╰───────────────────────────────────────────────╯╰────────────────────────────────╯
- ↑↓ move   ⏎ open   ← back   s n c m sort   ? help   q quit
+ ↑↓ move   ⏎ open   ← back   s n c m sort   d delete   r rescan   D drives   ? help   q quit
 ```
 
 ## Features
@@ -20,8 +20,12 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
 - **Fast parallel scan** on all CPU cores, with a live progress screen (`Esc` cancels)
 - **Understands filesystems**: btrfs subvolumes (like `/home`) and ZFS datasets of one pool count as one filesystem,
   other disks are labeled and skipped (`--cross-fs` includes them), `/proc`, `/sys` and btrfs snapshots are never double counted
+- **Mounted drives**: a drives list (`D`) with type and usage of every disk, see how full a drive is before
+  scanning it, `Enter` scans it on demand, and when you plug something in nudu tells you where it was
+  mounted (`g` jumps straight there)
 - **Real sizes**: both apparent size and space actually used on disk, hard links counted once
 - **Sorting** by size, name, item count or last change, in either direction
+- **Safe delete**: always asks first, removes what it can, never enters mounted drives, totals update instantly
 - **Details pane** with type, sizes, share of the folder, item count and last change
 - **Filesystem header** showing the filesystem type and how full it is
 - **Follows your terminal theme**: all colors come from your terminal's palette
@@ -62,6 +66,7 @@ nudu ~            # your home folder
 nudu / --cross-fs # everything, including other mounted filesystems
 nudu --no-icons   # plain characters if you don't use a Nerd Font
 nudu -t 4         # limit scanning to 4 threads
+nudu -r           # read-only: deleting is turned off
 ```
 
 | Key | Action |
@@ -70,7 +75,12 @@ nudu -t 4         # limit scanning to 4 threads
 | `PgUp` `PgDn` / `Home` `End` | Jump |
 | `Enter` / `→` / `l` | Open folder |
 | `←` / `h` / `<` | Back |
+| `Enter` on a drive | Scan that mounted drive and open it |
+| `r` | Rescan the open folder (new files, new mounts) |
+| `D` | List all mounted drives, `Enter` opens one |
+| `g` | Open the drive that was just mounted |
 | `s` `n` `c` `m` | Sort by size, name, item count, last modified (again to reverse) |
+| `d` / `Del` | Delete the selected entry (asks first, `y` to confirm) |
 | `S` | Rescan with sudo (when some folders were unreadable) |
 | `?` | Help |
 | `q` / `Esc` | Quit |

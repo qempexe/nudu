@@ -54,6 +54,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     draw_footer(frame, footer, app);
 
+    if let Some(index) = app.confirm {
+        draw_confirm(frame, app, index);
+    }
+    if let Some(index) = app.deleting {
+        draw_deleting(frame, app, index);
+    }
+    if app.drives.is_some() {
+        draw_drives(frame, app);
+    }
     if app.show_help {
         draw_help(frame);
     }
@@ -179,8 +188,8 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
         .rows()
         .into_iter()
         .map(|row| match row {
-            Row::Parent => parent_item(app.icons),
-            Row::Entry(e) => entry_item(e, app.icons, name_width, bar_width, largest, total),
+            Row::Parent => parent_item(app.settings.icons),
+            Row::Entry(e) => entry_item(e, app.settings.icons, name_width, bar_width, largest, total),
         })
         .collect();
 
@@ -219,7 +228,11 @@ fn entry_item(
 ) -> ListItem<'static> {
     let (icon, icon_color) = icon_for(entry, icons);
     // Skipped folders carry a short tag like `vfat` or `snapshots`.
-    let tag = entry.skipped.as_ref().map(skipped_tag).unwrap_or_default();
+    let tag = match (&entry.skipped, &entry.other_fs) {
+        (Some(skipped), _) => skipped_tag(skipped),
+        (None, Some(fs)) => fs.clone(),
+        (None, None) => String::new(),
+    };
     let tag_width = if tag.is_empty() { 0 } else { tag.chars().count() + 1 };
     let mut name = fit(
         &entry.name.to_string_lossy(),
@@ -259,6 +272,10 @@ fn entry_item(
 
 /// Icon and its color. Nerd Font glyphs, or plain characters with --no-icons.
 fn icon_for(entry: &Entry, icons: bool) -> (&'static str, Color) {
+    if entry.other_fs.is_some() && entry.skipped.is_none() {
+        // A drive that has been scanned: same drive icon, normal color.
+        return (if icons { "󰋊" } else { "#" }, ACCENT);
+    }
     if let Some(skipped) = &entry.skipped {
         return match (skipped, icons) {
             (Skipped::Snapshots, true) => ("󰁯", Color::Yellow),
@@ -349,7 +366,8 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
 /// The short label shown after a skipped folder's name.
 fn skipped_tag(skipped: &Skipped) -> String {
     match skipped {
-        Skipped::OtherFs(fs) | Skipped::Virtual(fs) => fs.clone(),
+        Skipped::OtherFs(usage) => usage.fs_type.clone(),
+        Skipped::Virtual(fs) => fs.clone(),
         Skipped::Snapshots => "snapshots".into(),
     }
 }
@@ -372,6 +390,9 @@ fn entry_details(e: &Entry, app: &App) -> Vec<Line<'static>> {
     ];
     if e.kind == Kind::Dir {
         lines.push(field("Items", group_digits(e.items)));
+    }
+    if let Some(fs) = &e.other_fs {
+        lines.push(field("Filesystem", format!("{fs} (mounted drive)")));
     }
     lines.push(field("Modified", relative_time(app.now, e.mtime)));
     if e.error {
@@ -402,26 +423,44 @@ fn entry_details(e: &Entry, app: &App) -> Vec<Line<'static>> {
 
 /// What the details pane says about a folder that was not scanned.
 fn skipped_details(skipped: &Skipped) -> Vec<Line<'static>> {
-    let (kind, fs, why): (&str, String, &[&str]) = match skipped {
-        Skipped::OtherFs(fs) => (
-            "Mount point",
-            fs.clone(),
-            &["Another filesystem.", "Not scanned: use --cross-fs", "to include it."],
-        ),
-        Skipped::Virtual(fs) => (
-            "Mount point",
-            fs.clone(),
-            &["Kernel filesystem with no", "real files. Never scanned."],
-        ),
-        Skipped::Snapshots => (
-            "Snapshots",
-            "btrfs".into(),
-            &["Snapshots share data with", "your files, so counting them", "would double your totals."],
-        ),
-    };
-    let mut lines = vec![field("Type", kind.into()), field("Filesystem", fs), Line::default()];
-    lines.extend(why.iter().map(|w| Line::styled(format!(" {w}"), Style::new().fg(MUTED))));
-    lines
+    let note = |text: &str| Line::styled(format!(" {text}"), Style::new().fg(MUTED));
+    match skipped {
+        Skipped::OtherFs(usage) => {
+            let ratio = if usage.total == 0 { 0.0 } else { usage.used as f64 / usage.total as f64 };
+            vec![
+                field("Type", "Mounted drive".into()),
+                field("Filesystem", usage.fs_type.clone()),
+                field("Used", format!("{} of {}", human_size(usage.used), human_size(usage.total))),
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(block_gauge(ratio, 20), Style::new().fg(ACCENT)),
+                    Span::styled(format!(" {:.0}%", ratio * 100.0), Style::new().fg(MUTED)),
+                ]),
+                Line::default(),
+                note("Not scanned yet."),
+                Line::from(vec![
+                    Span::raw(" Press "),
+                    Span::styled("⏎", Style::new().fg(ACCENT).bold()),
+                    Span::raw(" to scan it."),
+                ]),
+            ]
+        }
+        Skipped::Virtual(fs) => vec![
+            field("Type", "Mount point".into()),
+            field("Filesystem", fs.clone()),
+            Line::default(),
+            note("Kernel filesystem with no"),
+            note("real files. Never scanned."),
+        ],
+        Skipped::Snapshots => vec![
+            field("Type", "Snapshots".into()),
+            field("Filesystem", "btrfs".into()),
+            Line::default(),
+            note("Snapshots share data with"),
+            note("your files, so counting them"),
+            note("would double your totals."),
+        ],
+    }
 }
 
 /// ` Label     value`
@@ -435,12 +474,27 @@ fn field(label: &str, value: String) -> Line<'static> {
 // ── Footer ──────────────────────────────────────────────────────────────────
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
+    // The result of the last action replaces the hints until the next key.
+    if let Some(msg) = &app.message {
+        let (mark, color) = if msg.error { ("!", Color::Red) } else { ("✓", Color::Green) };
+        let line = Line::from(vec![
+            Span::styled(format!(" {mark} "), Style::new().fg(color).bold()),
+            Span::styled(msg.text.clone(), Style::new().fg(color)),
+        ]);
+        frame.render_widget(line, area);
+        return;
+    }
     let mut hints = vec![
         ("↑↓", "move"),
         ("⏎", "open"),
         ("←", "back"),
         ("s n c m", "sort"),
     ];
+    if !app.settings.read_only {
+        hints.push(("d", "delete"));
+    }
+    hints.push(("r", "rescan"));
+    hints.push(("D", "drives"));
     if app.can_sudo() {
         hints.push(("S", "sudo"));
     }
@@ -455,36 +509,48 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
 
 // ── Help popup ──────────────────────────────────────────────────────────────
 
-const HELP: &[(&str, &str)] = &[
+/// Help, in two columns so it fits small terminals: moving | doing.
+const HELP_LEFT: &[(&str, &str)] = &[
     ("↑ ↓  k j", "move"),
     ("PgUp PgDn", "jump a page"),
     ("Home End", "first / last"),
     ("⏎ → l", "open folder"),
     ("← h <", "back"),
-    ("", ""),
-    ("s", "sort by size"),
-    ("n", "sort by name"),
-    ("c", "sort by item count"),
-    ("m", "sort by last modified"),
-    ("", "press again to reverse"),
-    ("", ""),
+    ("⏎ on drive", "scan that drive"),
+    ("D", "all drives"),
+    ("g", "new drive"),
+];
+
+const HELP_RIGHT: &[(&str, &str)] = &[
+    ("s n", "sort size / name"),
+    ("c m", "sort items / date"),
+    ("", "again to reverse"),
+    ("d Del", "delete (asks first)"),
+    ("r", "rescan folder"),
     ("S", "rescan with sudo"),
     ("?", "this help"),
     ("q Esc", "quit"),
 ];
 
 fn draw_help(frame: &mut Frame) {
-    let width = 40;
-    let height = HELP.len() as u16 + 4;
+    let rows = HELP_LEFT.len().max(HELP_RIGHT.len());
+    let width = 70;
+    let height = rows as u16 + 4;
     let area = centered(frame.area(), width, height);
 
+    let column = |entry: Option<&(&str, &str)>| -> Vec<Span<'static>> {
+        let (keys, action) = entry.copied().unwrap_or(("", ""));
+        vec![
+            Span::styled(format!("  {keys:<11}"), Style::new().fg(ACCENT).bold()),
+            Span::styled(format!("{action:<20}"), Style::new().fg(MUTED)),
+        ]
+    };
     let mut lines = vec![Line::default()];
-    lines.extend(HELP.iter().map(|&(keys, action)| {
-        Line::from(vec![
-            Span::styled(format!("  {keys:<12}"), Style::new().fg(ACCENT).bold()),
-            Span::styled(action, Style::new().fg(MUTED)),
-        ])
-    }));
+    for i in 0..rows {
+        let mut spans = column(HELP_LEFT.get(i));
+        spans.extend(column(HELP_RIGHT.get(i)));
+        lines.push(Line::from(spans));
+    }
     let title = Line::from(Span::styled(" keys ", Style::new().bold()));
     let hint = Line::from(Span::styled(" any key to close ", Style::new().fg(MUTED)))
         .right_aligned();
@@ -495,6 +561,127 @@ fn draw_help(frame: &mut Frame) {
         Paragraph::new(lines).block(pane(title).title_bottom(hint)),
         area,
     );
+}
+
+// ── Drives popup ────────────────────────────────────────────────────────────
+
+/// Every mounted drive, with its type and how full it is.
+fn draw_drives(frame: &mut Frame, app: &mut App) {
+    let icons = app.settings.icons;
+    let Some(view) = &mut app.drives else { return };
+    let width = 76u16.min(frame.area().width);
+    let height = (view.drives.len() as u16 + 4).clamp(6, frame.area().height);
+    let area = centered(frame.area(), width, height);
+
+    // Columns: [▸ ][icon ][mount point…][ type][ used / total][ gauge]
+    let inner = width.saturating_sub(4) as usize;
+    let point_width = inner.saturating_sub(2 + 2 + 12 + 24 + 11).max(10);
+
+    let items: Vec<ListItem> = view
+        .drives
+        .iter()
+        .map(|(drive, usage)| {
+            let ratio = if usage.total == 0 { 0.0 } else { usage.used as f64 / usage.total as f64 };
+            let mut point = crate::units::shorten_home(&drive.mount.point);
+            if drive.extra_mounts > 0 {
+                point.push_str(&format!(" +{}", drive.extra_mounts));
+            }
+            let color = if ratio >= 0.9 { Color::Red } else if ratio >= 0.75 { Color::Yellow } else { ACCENT };
+            ListItem::new(Line::from(vec![
+                Span::styled(if icons { "󰋊 " } else { "# " }, Style::new().fg(ACCENT)),
+                Span::styled(fit(&point, point_width), Style::new().bold()),
+                Span::styled(format!(" {:<11}", fit(&drive.mount.fs_type, 11)), Style::new().fg(Color::Yellow)),
+                Span::raw(format!(
+                    " {:>10} / {:<10}",
+                    human_size(usage.used),
+                    human_size(usage.total)
+                )),
+                Span::styled(format!(" {}", block_gauge(ratio, 10)), Style::new().fg(color)),
+            ]))
+        })
+        .collect();
+
+    let title = Line::from(Span::styled(" drives ", Style::new().bold()));
+    let hint = Line::from(vec![
+        Span::styled(" ⏎ ", Style::new().fg(ACCENT).bold()),
+        Span::styled("open · ", Style::new().fg(MUTED)),
+        Span::styled("any other key ", Style::new().fg(ACCENT).bold()),
+        Span::styled("close ", Style::new().fg(MUTED)),
+    ])
+    .right_aligned();
+    let list = List::new(items)
+        .block(pane(title).title_bottom(hint))
+        .highlight_symbol(Span::styled("▸ ", Style::new().fg(ACCENT).bold()))
+        .highlight_spacing(HighlightSpacing::Always)
+        .highlight_style(Style::new().bg(MUTED).add_modifier(Modifier::BOLD));
+    frame.render_widget(Clear, area);
+    frame.render_stateful_widget(list, area, &mut view.list);
+}
+
+// ── Delete popups ───────────────────────────────────────────────────────────
+
+/// "Are you sure?" before anything is removed.
+fn draw_confirm(frame: &mut Frame, app: &App, index: usize) {
+    let entry = app.child(index);
+    let width = 52u16.min(frame.area().width);
+    let inner = width.saturating_sub(6) as usize;
+    let (icon, icon_color) = icon_for(entry, app.settings.icons);
+    let path = format!("{}/{}", app.display_path(), entry.name.to_string_lossy());
+    let path = path.replacen("//", "/", 1);
+
+    let mut lines = vec![
+        Line::default(),
+        Line::from(vec![
+            Span::styled(format!("  {icon} "), Style::new().fg(icon_color)),
+            Span::styled(fit(&entry.name.to_string_lossy(), inner).trim_end().to_string(), Style::new().bold()),
+        ]),
+        Line::styled(format!("  {}", fit_left(&path, inner)), Style::new().fg(MUTED)),
+        Line::default(),
+        field("  Size", format!("{} on disk", human_size(entry.disk))),
+    ];
+    if entry.kind == Kind::Dir {
+        lines.push(field("  Items", group_digits(entry.items)));
+    }
+    lines.push(Line::default());
+    lines.push(Line::styled("  This cannot be undone.", Style::new().fg(Color::Red).bold()));
+    if app.is_root {
+        lines.push(Line::styled("  Running as root: nothing is protected.", Style::new().fg(Color::Red)));
+    }
+    lines.push(Line::default());
+
+    let height = lines.len() as u16 + 2;
+    let area = centered(frame.area(), width, height);
+    let title = Line::from(Span::styled(" delete ", Style::new().fg(Color::Red).bold()));
+    let hint = Line::from(vec![
+        Span::styled(" y ", Style::new().fg(Color::Red).bold()),
+        Span::styled("delete · ", Style::new().fg(MUTED)),
+        Span::styled("any other key ", Style::new().fg(ACCENT).bold()),
+        Span::styled("cancel ", Style::new().fg(MUTED)),
+    ])
+    .right_aligned();
+    let block = pane(title)
+        .title_bottom(hint)
+        .border_style(Style::new().fg(Color::Red));
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Shown for the moment a delete takes.
+fn draw_deleting(frame: &mut Frame, app: &App, index: usize) {
+    let entry = app.child(index);
+    let width = 44u16.min(frame.area().width);
+    let area = centered(frame.area(), width, 5);
+    let name = fit(&entry.name.to_string_lossy(), width.saturating_sub(8) as usize);
+    let lines = vec![
+        Line::default(),
+        Line::from(vec![
+            Span::styled("  ⠿ ", Style::new().fg(Color::Red).bold()),
+            Span::raw(name.trim_end().to_string()),
+        ]),
+    ];
+    let title = Line::from(Span::styled(" deleting ", Style::new().fg(Color::Red).bold()));
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines).block(pane(title)), area);
 }
 
 // ── Scanning screen ─────────────────────────────────────────────────────────

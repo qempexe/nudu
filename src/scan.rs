@@ -47,24 +47,38 @@ pub struct Entry {
     pub error: bool,
     /// Set on folders we deliberately did not descend into.
     pub skipped: Option<Skipped>,
+    /// Set on folders where another filesystem is mounted (its type,
+    /// like `ext4`), whether we scanned into it or not.
+    pub other_fs: Option<String>,
     pub children: Vec<Entry>,
+}
+
+/// How full a mounted filesystem is, read without scanning it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MountUsage {
+    pub fs_type: String,
+    pub used: u64,
+    pub total: u64,
 }
 
 /// Why a folder was not scanned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Skipped {
-    /// Another filesystem is mounted here (its type, like `vfat`).
-    OtherFs(String),
+    /// Another filesystem is mounted here. Enter scans it on demand.
+    OtherFs(MountUsage),
     /// A kernel filesystem with no real files, like `proc`.
     Virtual(String),
     /// btrfs snapshots: their data is shared with the live files.
     Snapshots,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ScanOptions {
     /// Stay on the filesystem of the starting directory (like `du -x`).
     pub one_filesystem: bool,
+    /// Mount points to scan even when `one_filesystem` is set: drives the
+    /// user opened, so a rescan keeps showing their contents.
+    pub include: Vec<PathBuf>,
 }
 
 /// Live counters the UI reads while a scan is running.
@@ -83,6 +97,28 @@ pub struct Progress {
 impl Progress {
     pub fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
+    }
+}
+
+/// What to do at a filesystem boundary.
+enum Crossing {
+    /// Go in. `other_fs` names the filesystem if it differs from the start.
+    Scan { other_fs: Option<String> },
+    Skip(Skipped),
+}
+
+/// Reads how full the filesystem mounted at `path` is (one statvfs call).
+pub fn mount_usage(path: &Path, fs_type: &str) -> MountUsage {
+    let (used, total) = rustix::fs::statvfs(path)
+        .map(|s| {
+            let total = s.f_blocks * s.f_frsize;
+            (total.saturating_sub(s.f_bfree * s.f_frsize), total)
+        })
+        .unwrap_or((0, 0));
+    MountUsage {
+        fs_type: fs_type.to_string(),
+        used,
+        total,
     }
 }
 
@@ -138,6 +174,7 @@ impl Walker<'_> {
             items: 0,
             error: false,
             skipped: None,
+            other_fs: None,
             children: Vec::new(),
         };
 
@@ -159,11 +196,12 @@ impl Walker<'_> {
         self.progress.bytes.fetch_add(entry.disk, Ordering::Relaxed);
 
         if kind == Kind::Dir {
-            entry.skipped = if meta.dev() == parent_dev {
-                None
-            } else {
-                self.boundary(path)
-            };
+            if meta.dev() != parent_dev {
+                match self.boundary(path) {
+                    Crossing::Scan { other_fs } => entry.other_fs = other_fs,
+                    Crossing::Skip(why) => entry.skipped = Some(why),
+                }
+            }
             if entry.skipped.is_none() {
                 self.read_children(path, &mut entry, meta.dev());
             }
@@ -173,27 +211,28 @@ impl Walker<'_> {
     }
 
     /// Called when `path` is on another device than its parent.
-    /// Returns why to skip it, or `None` to scan it like any folder.
-    fn boundary(&self, path: &Path) -> Option<Skipped> {
+    fn boundary(&self, path: &Path) -> Crossing {
         if mounts::is_snapshot_dir(path) {
-            return Some(Skipped::Snapshots);
+            return Crossing::Skip(Skipped::Snapshots);
         }
         let Some(mount) = self.mounts.at(path) else {
             // A new device without a mount: a btrfs subvolume nested inside
             // the tree (like /var/lib/machines). Same filesystem, so scan it.
-            return None;
+            return Crossing::Scan { other_fs: None };
         };
         if mounts::is_virtual(&mount.fs_type) {
-            return Some(Skipped::Virtual(mount.fs_type.clone()));
+            return Crossing::Skip(Skipped::Virtual(mount.fs_type.clone()));
         }
         let same = self
             .root_mount
             .as_ref()
             .is_some_and(|root| mounts::same_filesystem(root, mount));
-        if same || !self.opts.one_filesystem {
-            None
+        if same {
+            Crossing::Scan { other_fs: None }
+        } else if !self.opts.one_filesystem || self.opts.include.iter().any(|p| p == path) {
+            Crossing::Scan { other_fs: Some(mount.fs_type.clone()) }
         } else {
-            Some(Skipped::OtherFs(mount.fs_type.clone()))
+            Crossing::Skip(Skipped::OtherFs(mount_usage(path, &mount.fs_type)))
         }
     }
 
