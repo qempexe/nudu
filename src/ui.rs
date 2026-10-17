@@ -8,7 +8,7 @@
 //! │ ▸ 󰉋 Steam        62.1 GiB ━━━━━━━━  68% ││ Size       62.1 GiB   │
 //! │   󰉋 containers   14.0 GiB ━━╸       15% ││ ...                   │
 //! ╰─────────────────────────────────────────╯╰───────────────────────╯
-//!  ↑↓ move  ⏎ open  ← back  q quit
+//!  ↑↓ move  ⏎ open  ← back  s n c m sort  ? help  q quit
 //! ```
 //!
 //! Colors are the terminal's own ANSI palette, so nudu follows your theme.
@@ -17,7 +17,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, HighlightSpacing, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, HighlightSpacing, List, ListItem, Paragraph, Wrap};
 
 use crate::app::{App, Row};
 use crate::scan::{Entry, Kind};
@@ -52,6 +52,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     draw_footer(frame, footer);
+
+    if app.show_help {
+        draw_help(frame);
+    }
 }
 
 // ── Header ──────────────────────────────────────────────────────────────────
@@ -147,7 +151,13 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
         Span::styled(" · ", Style::new().fg(MUTED)),
         Span::raw(format!("{} items ", group_digits(dir.items))),
     ]);
-    let block = pane(title);
+    let arrow = if app.sort.descending() { "↓" } else { "↑" };
+    let sort_label = Line::from(vec![
+        Span::styled(" sort ", Style::new().fg(MUTED)),
+        Span::styled(format!("{} {arrow} ", app.sort.key.label()), Style::new().fg(ACCENT)),
+    ])
+    .right_aligned();
+    let block = pane(title).title(sort_label);
 
     // Columns: [▸ ][icon ][name…][ size][ bar][ pct]
     let inner = block.inner(area).width.saturating_sub(2) as usize;
@@ -309,7 +319,11 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(fit(&title, width).trim_end().to_string(), Style::new().bold()),
         Span::raw(" "),
     ]);
-    frame.render_widget(Paragraph::new(lines).block(pane(title)), area);
+    // Wrap long values instead of cutting them off at the border.
+    let details = Paragraph::new(lines)
+        .block(pane(title))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(details, area);
 }
 
 fn entry_details(e: &Entry, app: &App) -> Vec<Line<'static>> {
@@ -330,11 +344,23 @@ fn entry_details(e: &Entry, app: &App) -> Vec<Line<'static>> {
     }
     lines.push(field("Modified", relative_time(app.now, e.mtime)));
     if e.error {
+        // Short lines that fit the pane; each one stands on its own.
+        let (what, hints): (&str, &[&str]) = if e.kind == Kind::Dir {
+            (
+                "Some items are unreadable",
+                &["Sizes may be too low.", "Run with sudo to see all."],
+            )
+        } else {
+            ("Could not be read", &["Run with sudo to see it."])
+        };
         lines.push(Line::default());
-        lines.push(Line::styled(
-            " ! some entries could not be read",
-            Style::new().fg(Color::Red),
-        ));
+        lines.push(Line::from(vec![
+            Span::styled(" ! ", Style::new().fg(Color::Red).bold()),
+            Span::styled(what, Style::new().fg(Color::Red)),
+        ]));
+        for hint in hints {
+            lines.push(Line::styled(format!("   {hint}"), Style::new().fg(MUTED)));
+        }
     }
     lines
 }
@@ -350,13 +376,80 @@ fn field(label: &str, value: String) -> Line<'static> {
 // ── Footer ──────────────────────────────────────────────────────────────────
 
 fn draw_footer(frame: &mut Frame, area: Rect) {
-    let hints = [("↑↓", "move"), ("⏎", "open"), ("←", "back"), ("q", "quit")];
+    let hints = [
+        ("↑↓", "move"),
+        ("⏎", "open"),
+        ("←", "back"),
+        ("s n c m", "sort"),
+        ("?", "help"),
+        ("q", "quit"),
+    ];
     let mut spans = vec![Span::raw(" ")];
     for (key, label) in hints {
         spans.push(Span::styled(key, Style::new().fg(ACCENT).bold()));
         spans.push(Span::styled(format!(" {label}   "), Style::new().fg(MUTED)));
     }
     frame.render_widget(Line::from(spans), area);
+}
+
+// ── Help popup ──────────────────────────────────────────────────────────────
+
+const HELP: &[(&str, &str)] = &[
+    ("↑ ↓  k j", "move"),
+    ("PgUp PgDn", "jump a page"),
+    ("Home End", "first / last"),
+    ("⏎ → l", "open folder"),
+    ("← h <", "back"),
+    ("", ""),
+    ("s", "sort by size"),
+    ("n", "sort by name"),
+    ("c", "sort by item count"),
+    ("m", "sort by last modified"),
+    ("", "press again to reverse"),
+    ("", ""),
+    ("?", "this help"),
+    ("q Esc", "quit"),
+];
+
+fn draw_help(frame: &mut Frame) {
+    let width = 40;
+    let height = HELP.len() as u16 + 4;
+    let area = centered(frame.area(), width, height);
+
+    let mut lines = vec![Line::default()];
+    lines.extend(HELP.iter().map(|&(keys, action)| {
+        Line::from(vec![
+            Span::styled(format!("  {keys:<12}"), Style::new().fg(ACCENT).bold()),
+            Span::styled(action, Style::new().fg(MUTED)),
+        ])
+    }));
+    let title = Line::from(Span::styled(" keys ", Style::new().bold()));
+    let hint = Line::from(Span::styled(" any key to close ", Style::new().fg(MUTED)))
+        .right_aligned();
+
+    // Clear wipes what is underneath so the popup doesn't show through.
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines).block(pane(title).title_bottom(hint)),
+        area,
+    );
+}
+
+/// A `width` x `height` rectangle in the middle of `area`.
+fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let [_, middle, _] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(height.min(area.height)),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    let [_, center, _] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(width.min(area.width)),
+        Constraint::Fill(1),
+    ])
+    .areas(middle);
+    center
 }
 
 /// A rounded, muted panel with a title on the top border.

@@ -12,13 +12,14 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
 │   󰉋 Trash             5.2 GiB ━━━━━━━━━━   6% ││ On disk   62.1 GiB             │
 │   󰈔 data.db         412.0 MiB ━━━━━━━━━━  <1% ││ Modified  3 days ago           │
 ╰───────────────────────────────────────────────╯╰────────────────────────────────╯
- ↑↓ move   ⏎ open   ← back   q quit
+ ↑↓ move   ⏎ open   ← back   s n c m sort   ? help   q quit
 ```
 
 ## Features
 
 - **Fast scan** of any folder, staying on one filesystem by default
 - **Real sizes**: both apparent size and space actually used on disk, hard links counted once
+- **Sorting** by size, name, item count or last change, in either direction
 - **Details pane** with type, sizes, share of the folder, item count and last change
 - **Filesystem header** showing the filesystem type and how full it is
 - **Follows your terminal theme**: all colors come from your terminal's palette
@@ -56,6 +57,8 @@ nudu --no-icons   # plain characters if you don't use a Nerd Font
 | `PgUp` `PgDn` / `Home` `End` | Jump |
 | `Enter` / `→` / `l` | Open folder |
 | `←` / `h` / `<` | Back |
+| `s` `n` `c` `m` | Sort by size, name, item count, last modified (again to reverse) |
+| `?` | Help |
 | `q` / `Esc` | Quit |
 
 Icons use [Nerd Fonts](https://www.nerdfonts.com/). Use `--no-icons` if they show up as boxes.

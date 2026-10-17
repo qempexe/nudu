@@ -1,6 +1,7 @@
 mod app;
 mod fsinfo;
 mod scan;
+mod sort;
 mod ui;
 mod units;
 
