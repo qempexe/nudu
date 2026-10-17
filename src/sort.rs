@@ -117,6 +117,7 @@ mod tests {
             other_fs: None,
             types: None,
             ages: None,
+            owner: crate::owners::Owner::None,
             children: Vec::new(),
         }
     }

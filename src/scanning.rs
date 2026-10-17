@@ -1,7 +1,7 @@
 //! Runs a scan in the background while showing live progress.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 
+use crate::owners;
 use crate::scan::{self, Entry, Progress, ScanOptions};
 use crate::ui;
 
@@ -47,7 +48,20 @@ pub fn run(terminal: &mut DefaultTerminal, path: &Path, opts: ScanOptions) -> io
     // A scoped thread may borrow `progress` and `path` from this function,
     // because the scope guarantees the thread ends before they do.
     thread::scope(|s| {
-        let worker = s.spawn(|| scan::scan(path, opts, &progress));
+        // Read the package database while the disk is being scanned.
+        s.spawn(|| owners::preload(path));
+        let worker = s.spawn(|| {
+            let mut root = match scan::scan(path, opts, &progress) {
+                Ok(Some(root)) => root,
+                other => return other,
+            };
+            // Second, quick pass: who owns what (packages, apps, repos).
+            if let Ok(mut current) = progress.current.lock() {
+                *current = PathBuf::from("matching files to their owners…");
+            }
+            owners::assign(&mut root, path);
+            Ok(Some(root))
+        });
 
         while !worker.is_finished() {
             let snapshot = Snapshot {

@@ -24,6 +24,7 @@ use rayon::prelude::*;
 use crate::age::{self, AgeTotals, Bucket};
 use crate::filetype::{self, Category, TypeTotals};
 use crate::mounts::{self, Mount, MountTable};
+use crate::owners::Owner;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -57,6 +58,8 @@ pub struct Entry {
     pub types: Option<Box<TypeTotals>>,
     /// For folders: bytes on disk per age bucket, everything below.
     pub ages: Option<Box<AgeTotals>>,
+    /// Who this belongs to (filled in by owners.rs after the scan).
+    pub owner: Owner,
     pub children: Vec<Entry>,
 }
 
@@ -210,6 +213,7 @@ impl Walker<'_> {
             other_fs: None,
             types: None,
             ages: None,
+            owner: Owner::None,
             children: Vec::new(),
         };
 

@@ -30,12 +30,15 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
   the biggest items inside a folder and a breakdown by type (video, images, code, archives...)
 - **Age heat**: `a` colors every bar by when it last changed (today → years ago) and shows its age,
   `A` switches to a cold view that only shows data older than a year (or six months), sized by how much old data is inside
+- **Owners**: every file is tagged with who it belongs to: a package (`pacman:firefox`, `dpkg:…`), a git repo,
+  a Flatpak app, Steam or a single game, Docker, or an app's cache, config or data folder.
+  System files no package claims show up as `unowned`. `O` ranks who uses the most space,
+  and deleting a package's files reminds you to use the package manager instead
 - **Filesystem header** showing the filesystem type and how full it is
 - **Follows your terminal theme**: all colors come from your terminal's palette
 
 ### Planned
 
-- **Owners**: see which package, app or repo a file belongs to
 - **btrfs-aware sizes**: compression savings and space shared with snapshots
 
 ## Install
@@ -83,6 +86,8 @@ nudu -r           # read-only: deleting is turned off
 | `g` | Open the drive that was just mounted |
 | `a` | Heat: color bars by age, show age instead of share |
 | `A` | Cold view: only data older than 1 year, again for 6 months, again to turn off |
+| `o` | Show owner tags in the list |
+| `O` | Owners ranking: who uses the most space in this folder |
 | `s` `n` `c` `m` | Sort by size, name, item count, last modified (again to reverse) |
 | `d` / `Del` | Delete the selected entry (asks first, `y` to confirm) |
 | `S` | Rescan with sudo (when some folders were unreadable) |

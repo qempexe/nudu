@@ -105,6 +105,7 @@ fn remove_tree(path: &Path, mounts: &MountTable) -> io::Result<()> {
 fn rescan(path: &Path, name: &std::ffi::OsStr, opts: &ScanOptions) -> Option<Entry> {
     let progress = Progress::default();
     let mut entry = scan::scan(path, opts.clone(), &progress).ok()??;
+    crate::owners::assign(&mut entry, path);
     entry.name = name.to_owned();
     Some(entry)
 }

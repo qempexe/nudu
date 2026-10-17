@@ -4,6 +4,7 @@ mod delete;
 mod filetype;
 mod fsinfo;
 mod mounts;
+mod owners;
 mod privilege;
 mod scan;
 mod scanning;

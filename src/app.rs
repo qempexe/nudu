@@ -12,6 +12,7 @@ use crate::age::{self, Cold};
 use crate::delete;
 use crate::fsinfo::FsInfo;
 use crate::mounts::{Drive, MountTable};
+use crate::owners::{self, Owner};
 use crate::scan::{self, Entry, Kind, MountUsage, ScanOptions, Skipped};
 use crate::scanning;
 use crate::tree;
@@ -109,6 +110,18 @@ pub struct App {
     pub new_drive: Option<PathBuf>,
     /// The drives popup, when open.
     pub drives: Option<DrivesView>,
+    /// `o`: show owner tags in the list.
+    pub show_owners: bool,
+    /// `O`: who uses the most space in the open folder.
+    pub owners_view: Option<OwnersView>,
+}
+
+/// The owners popup: owners of everything in the open folder, biggest first.
+pub struct OwnersView {
+    pub folder: String,
+    pub total: u64,
+    pub rows: Vec<(Owner, u64)>,
+    pub list: ListState,
 }
 
 impl App {
@@ -127,6 +140,8 @@ impl App {
             mounts_seen: read_mounts(),
             new_drive: None,
             drives: None,
+            show_owners: false,
+            owners_view: None,
             root,
             root_path,
             trail: Vec::new(),
@@ -325,6 +340,25 @@ impl App {
         }
     }
 
+    /// `O`: ranks the owners of everything in the open folder.
+    fn open_owners(&mut self) {
+        let dir = self.current_dir();
+        let rows = owners::ranking(dir);
+        if rows.is_empty() {
+            self.note("Nothing here takes up space.", false);
+            return;
+        }
+        let total = rows.iter().map(|(_, b)| b).sum();
+        let mut list = ListState::default();
+        list.select(Some(0));
+        self.owners_view = Some(OwnersView {
+            folder: self.display_path(),
+            total,
+            rows,
+            list,
+        });
+    }
+
     /// `D`: lists every mounted drive.
     fn open_drives(&mut self) {
         let drives: Vec<(Drive, MountUsage)> = MountTable::load()
@@ -381,6 +415,18 @@ impl App {
             self.drives_key(key.code);
             return;
         }
+        // So does the owners popup: arrows scroll, anything else closes.
+        if let Some(view) = &mut self.owners_view {
+            let at = view.list.selected().unwrap_or(0);
+            match key.code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    view.list.select(Some((at + 1).min(view.rows.len().saturating_sub(1))))
+                }
+                KeyCode::Up | KeyCode::Char('k') => view.list.select(Some(at.saturating_sub(1))),
+                _ => self.owners_view = None,
+            }
+            return;
+        }
         self.message = None;
         // While a delete waits for confirmation, only `y` goes ahead.
         if let Some(index) = self.confirm.take() {
@@ -412,6 +458,8 @@ impl App {
             KeyCode::Char('d') | KeyCode::Delete => self.request_delete(),
             KeyCode::Char('r') => self.job = Some(Job::Rescan { reason: None }),
             KeyCode::Char('D') => self.open_drives(),
+            KeyCode::Char('o') => self.show_owners = !self.show_owners,
+            KeyCode::Char('O') => self.open_owners(),
             KeyCode::Char('a') => self.heat = !self.heat,
             KeyCode::Char('A') => self.cycle_cold(),
             KeyCode::Char('g') => match self.new_drive.clone() {

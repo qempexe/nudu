@@ -23,6 +23,7 @@ use crate::app::{App, Row};
 use crate::scanning::Snapshot;
 use crate::age::{self, Bucket};
 use crate::filetype::Category;
+use crate::owners::Owner;
 use crate::scan::{Entry, Kind, Skipped};
 use crate::units::{group_digits, human_size, relative_time};
 
@@ -64,6 +65,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if app.drives.is_some() {
         draw_drives(frame, app);
+    }
+    if app.owners_view.is_some() {
+        draw_owners(frame, app);
     }
     if app.show_help {
         draw_help(frame);
@@ -199,6 +203,7 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let style = RowStyle {
         icons: app.settings.icons,
         heat: app.heat,
+        owners: app.show_owners,
         name_width,
         bar_width,
         largest,
@@ -256,6 +261,8 @@ fn parent_item(icons: bool) -> ListItem<'static> {
 struct RowStyle {
     icons: bool,
     heat: bool,
+    /// Show the owner tag after each name (`o`).
+    owners: bool,
     name_width: usize,
     bar_width: usize,
     /// The biggest `size` in the folder: its bar is full.
@@ -266,13 +273,21 @@ struct RowStyle {
 
 /// `size` is what the size column shows: space on disk, or the cold part.
 fn entry_item(entry: &Entry, size: u64, style: &RowStyle) -> ListItem<'static> {
-    let RowStyle { icons, heat, name_width, bar_width, largest, total } = *style;
+    let RowStyle { icons, heat, owners, name_width, bar_width, largest, total } = *style;
     let (icon, icon_color) = icon_for(entry, icons);
     // Skipped folders carry a short tag like `vfat` or `snapshots`.
     let tag = match (&entry.skipped, &entry.other_fs) {
         (Some(skipped), _) => skipped_tag(skipped),
         (None, Some(fs)) => fs.clone(),
+        (None, None) if owners && entry.owner != Owner::None => {
+            fit(&entry.owner.label(), (name_width / 2).max(8)).trim_end().to_string()
+        }
         (None, None) => String::new(),
+    };
+    let tag_color = if entry.skipped.is_none() && entry.other_fs.is_none() {
+        owner_color(entry.owner)
+    } else {
+        Color::Yellow
     };
     let tag_width = if tag.is_empty() { 0 } else { tag.chars().count() + 1 };
     let mut name = fit(
@@ -295,7 +310,7 @@ fn entry_item(entry: &Entry, size: u64, style: &RowStyle) -> ListItem<'static> {
         Span::styled(name, name_style),
     ];
     if !tag.is_empty() {
-        spans.push(Span::styled(format!(" {tag}"), Style::new().fg(Color::Yellow)));
+        spans.push(Span::styled(format!(" {tag}"), Style::new().fg(tag_color)));
     }
     spans.push(Span::raw(format!(" {:>10}", human_size(size))));
     // In heat mode, the bar is colored by how long ago this last changed.
@@ -441,6 +456,10 @@ fn entry_details(e: &Entry, app: &App, width: usize) -> Vec<Line<'static>> {
     }
     if let Some(fs) = &e.other_fs {
         lines.push(field("Filesystem", format!("{fs} (drive)")));
+    }
+    if e.owner != Owner::None {
+        let style = Style::new().fg(owner_color(e.owner));
+        lines.extend(field_wrapped("Owner", &e.owner.label(), width, style));
     }
     lines.push(field("Modified", relative_time(app.now, e.mtime)));
     let bucket = Bucket::of(e.mtime);
@@ -661,6 +680,45 @@ fn skipped_details(skipped: &Skipped) -> Vec<Line<'static>> {
     }
 }
 
+/// Like `field`, but a value too long for the pane continues on the next
+/// lines, lined up under the value column, instead of being cut off.
+fn field_wrapped(label: &str, value: &str, width: usize, style: Style) -> Vec<Line<'static>> {
+    const LABEL: usize = 12; // " " + 11-wide label
+    let room = width.saturating_sub(LABEL).max(8);
+    wrap_value(value, room)
+        .into_iter()
+        .enumerate()
+        .map(|(i, chunk)| {
+            let lead = if i == 0 { format!(" {label:<11}") } else { " ".repeat(LABEL) };
+            Line::from(vec![
+                Span::styled(lead, Style::new().fg(MUTED)),
+                Span::styled(chunk, style),
+            ])
+        })
+        .collect()
+}
+
+/// Splits `text` into pieces of at most `room` characters, preferring to
+/// break right after `:`, `-`, `.`, `/` or a space, so names stay readable:
+/// `pacman:docker-desktop` → `pacman:docker-` / `desktop`.
+fn wrap_value(text: &str, room: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut rest: Vec<char> = text.chars().collect();
+    while rest.len() > room {
+        let window = &rest[..room];
+        let cut = window
+            .iter()
+            .rposition(|c| matches!(c, ':' | '-' | '.' | '/' | ' ' | '_'))
+            .map(|i| i + 1)
+            .filter(|&i| i > room / 3) // don't leave a tiny first piece
+            .unwrap_or(room);
+        chunks.push(rest[..cut].iter().collect::<String>().trim_end().to_string());
+        rest = rest[cut..].to_vec();
+    }
+    chunks.push(rest.into_iter().collect());
+    chunks
+}
+
 /// ` Label     value`
 fn field(label: &str, value: String) -> Line<'static> {
     Line::from(vec![
@@ -693,6 +751,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     }
     hints.push(("a", if app.heat { "heat off" } else { "heat" }));
     hints.push(("A", "cold"));
+    hints.push(("O", "owners"));
     hints.push(("r", "rescan"));
     hints.push(("D", "drives"));
     if app.can_sudo() {
@@ -727,6 +786,8 @@ const HELP_RIGHT: &[(&str, &str)] = &[
     ("", "again to reverse"),
     ("a", "heat colors (age)"),
     ("A", "cold data view"),
+    ("o", "owner tags"),
+    ("O", "owners ranking"),
     ("d Del", "delete (asks first)"),
     ("r", "rescan folder"),
     ("S", "rescan with sudo"),
@@ -763,6 +824,68 @@ fn draw_help(frame: &mut Frame) {
         Paragraph::new(lines).block(pane(title).title_bottom(hint)),
         area,
     );
+}
+
+/// One color per kind of owner, so tags are easy to tell apart.
+fn owner_color(owner: Owner) -> Color {
+    match owner {
+        Owner::Package(_) | Owner::Packages(_) => Color::Cyan,
+        Owner::Unowned => Color::Red,
+        Owner::Git(_) => Color::Green,
+        Owner::Flatpak(_) | Owner::Steam(_) => Color::Magenta,
+        Owner::Docker | Owner::Containers => Color::Blue,
+        Owner::Cache(_) | Owner::Trash => Color::Yellow,
+        Owner::Config(_) | Owner::Data(_) => Color::Gray,
+        Owner::None => MUTED,
+    }
+}
+
+// ── Owners popup ────────────────────────────────────────────────────────────
+
+/// Who uses the most space in the open folder.
+fn draw_owners(frame: &mut Frame, app: &mut App) {
+    let Some(view) = &mut app.owners_view else { return };
+    let width = 72u16.min(frame.area().width);
+    let height = (view.rows.len() as u16 + 4).clamp(6, frame.area().height.saturating_sub(2));
+    let area = centered(frame.area(), width, height);
+
+    // [▸ ][owner…][ size][ bar][ pct]
+    let inner = width.saturating_sub(4) as usize;
+    let bar_width = 14;
+    let name_width = inner.saturating_sub(2 + 11 + 1 + bar_width + 5);
+    let largest = view.rows.first().map(|r| r.1).unwrap_or(0);
+    let items: Vec<ListItem> = view
+        .rows
+        .iter()
+        .map(|&(owner, bytes)| {
+            let (fill, track) = line_bar(ratio(bytes, largest), bar_width);
+            ListItem::new(Line::from(vec![
+                Span::styled(fit(&owner.label(), name_width), Style::new().fg(owner_color(owner))),
+                Span::raw(format!(" {:>10} ", human_size(bytes))),
+                Span::styled(fill, Style::new().fg(owner_color(owner))),
+                Span::styled(track, Style::new().fg(MUTED)),
+                Span::styled(format!(" {:>4}", percent(bytes, view.total)), Style::new().fg(MUTED)),
+            ]))
+        })
+        .collect();
+
+    let title = Line::from(vec![
+        Span::styled(" owners ", Style::new().bold()),
+        Span::styled(format!("in {} ", fit_left(&view.folder, 30)), Style::new().fg(MUTED)),
+    ]);
+    let hint = Line::from(vec![
+        Span::styled(format!(" {} owners · ", view.rows.len()), Style::new().fg(MUTED)),
+        Span::styled("↑↓ ", Style::new().fg(ACCENT).bold()),
+        Span::styled("scroll · any other key closes ", Style::new().fg(MUTED)),
+    ])
+    .right_aligned();
+    let list = List::new(items)
+        .block(pane(title).title_bottom(hint))
+        .highlight_symbol(Span::styled("▸ ", Style::new().fg(ACCENT).bold()))
+        .highlight_spacing(HighlightSpacing::Always)
+        .highlight_style(Style::new().bg(MUTED).add_modifier(Modifier::BOLD));
+    frame.render_widget(Clear, area);
+    frame.render_stateful_widget(list, area, &mut view.list);
 }
 
 // ── Drives popup ────────────────────────────────────────────────────────────
@@ -843,6 +966,22 @@ fn draw_confirm(frame: &mut Frame, app: &App, index: usize) {
     ];
     if entry.kind == Kind::Dir {
         lines.push(field("  Items", group_digits(entry.items)));
+    }
+    // Package files should be removed with the package manager, so the
+    // system's package database stays correct.
+    if let Some(package) = entry.owner.package() {
+        let command = match entry.owner.label().split(':').next() {
+            Some("pacman") => format!("sudo pacman -R {package}"),
+            Some("dpkg") => format!("sudo apt remove {package}"),
+            _ => format!("your package manager ({package})"),
+        };
+        lines.push(Line::default());
+        lines.push(Line::styled(format!("  Installed by package {package}."), Style::new().fg(Color::Yellow)));
+        lines.push(Line::styled("  Better to remove it with:", Style::new().fg(Color::Yellow)));
+        lines.push(Line::styled(format!("  {command}"), Style::new().fg(Color::Yellow).bold()));
+    } else if let Owner::Packages(n) = entry.owner {
+        lines.push(Line::default());
+        lines.push(Line::styled(format!("  Holds files of {n} packages."), Style::new().fg(Color::Yellow)));
     }
     lines.push(Line::default());
     lines.push(Line::styled("  This cannot be undone.", Style::new().fg(Color::Red).bold()));
@@ -1003,6 +1142,15 @@ mod tests {
         assert_eq!(percent(68, 100), "68%");
         assert_eq!(percent(1, 1000), "<1%");
         assert_eq!(percent(0, 0), "");
+    }
+
+    #[test]
+    fn wraps_long_values_at_natural_breaks() {
+        assert_eq!(wrap_value("pacman:firefox", 20), ["pacman:firefox"]);
+        assert_eq!(wrap_value("pacman:docker-desktop", 19), ["pacman:docker-", "desktop"]);
+        assert_eq!(wrap_value("flatpak:org.gimp.GIMP", 12), ["flatpak:org.", "gimp.GIMP"]);
+        // No good break point: cut at the edge.
+        assert_eq!(wrap_value("abcdefghij", 4), ["abcd", "efgh", "ij"]);
     }
 
     #[test]
