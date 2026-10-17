@@ -2,12 +2,13 @@
 
 use std::io;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::widgets::ListState;
 
+use crate::age::{self, Cold};
 use crate::delete;
 use crate::fsinfo::FsInfo;
 use crate::mounts::{Drive, MountTable};
@@ -90,6 +91,10 @@ pub struct App {
     pub settings: Settings,
     /// "Now", fixed at startup, for "3 days ago" style times.
     pub now: i64,
+    /// `a`: color bars by age instead of the accent color.
+    pub heat: bool,
+    /// `A`: only show data older than this, sized by how much of it there is.
+    pub cold: Option<Cold>,
     /// Child index waiting for the user to confirm its deletion.
     pub confirm: Option<usize>,
     /// Child index being deleted right now (drawn as "deleting...").
@@ -108,14 +113,13 @@ pub struct App {
 
 impl App {
     pub fn new(root: Entry, root_path: PathBuf, fs: Option<FsInfo>, settings: Settings) -> Self {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+        let now = age::now();
         let mut app = Self {
             fs,
             settings,
             now,
+            heat: false,
+            cold: None,
             confirm: None,
             deleting: None,
             message: None,
@@ -210,9 +214,39 @@ impl App {
         self.root.error && !self.is_root
     }
 
+    /// What the size column shows for an entry: its space on disk, or in
+    /// the cold view only the part of it that is old.
+    pub fn size_of(&self, entry: &Entry) -> u64 {
+        match self.cold {
+            Some(cold) => cold.bytes(&entry.age_totals()),
+            None => entry.disk,
+        }
+    }
+
     /// Recomputes the display order of the open directory.
     fn refresh_order(&mut self) {
-        self.order = self.sort.order(&self.current_dir().children);
+        let children = &self.current_dir().children;
+        let mut order = self.sort.order(children, |e| self.size_of(e));
+        if self.cold.is_some() {
+            // The cold view hides everything without old data in it.
+            order.retain(|&i| self.size_of(&children[i]) > 0);
+        }
+        self.order = order;
+    }
+
+    /// `A`: one year, six months, off. Keeps the cursor on the same entry
+    /// when it is still visible.
+    fn cycle_cold(&mut self) {
+        let selected = self.list.selected().and_then(|r| self.child_index(r));
+        self.cold = Cold::next(self.cold);
+        self.refresh_order();
+        let row = selected.and_then(|i| self.row_of(i)).unwrap_or(0);
+        *self.list.offset_mut() = 0;
+        self.select_row(row);
+        match self.cold {
+            Some(cold) => self.note(&format!("Cold view: data older than {}", cold.label()), false),
+            None => self.note("Cold view off", false),
+        }
     }
 
     /// A child of the open directory, by its index in the tree.
@@ -378,6 +412,8 @@ impl App {
             KeyCode::Char('d') | KeyCode::Delete => self.request_delete(),
             KeyCode::Char('r') => self.job = Some(Job::Rescan { reason: None }),
             KeyCode::Char('D') => self.open_drives(),
+            KeyCode::Char('a') => self.heat = !self.heat,
+            KeyCode::Char('A') => self.cycle_cold(),
             KeyCode::Char('g') => match self.new_drive.clone() {
                 Some(path) => self.job = Some(Job::OpenRoot { path, reason: None }),
                 None => self.note("No new drive yet · D lists all drives", false),

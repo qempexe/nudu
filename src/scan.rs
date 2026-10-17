@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rayon::prelude::*;
 
+use crate::age::{self, AgeTotals, Bucket};
 use crate::filetype::{self, Category, TypeTotals};
 use crate::mounts::{self, Mount, MountTable};
 
@@ -54,6 +55,8 @@ pub struct Entry {
     /// For folders: bytes on disk per kind of file, everything below.
     /// Boxed so files, the vast majority of entries, stay small.
     pub types: Option<Box<TypeTotals>>,
+    /// For folders: bytes on disk per age bucket, everything below.
+    pub ages: Option<Box<AgeTotals>>,
     pub children: Vec<Entry>,
 }
 
@@ -66,6 +69,18 @@ impl Entry {
         let mut totals = TypeTotals::default();
         if self.kind != Kind::Dir {
             totals[Category::of(&self.name) as usize] = self.disk;
+        }
+        totals
+    }
+
+    /// Bytes on disk per age bucket, for this entry and all below it.
+    pub fn age_totals(&self) -> AgeTotals {
+        if let Some(ages) = &self.ages {
+            return **ages;
+        }
+        let mut totals = AgeTotals::default();
+        if self.kind != Kind::Dir {
+            totals[Bucket::of(self.mtime) as usize] = self.disk;
         }
         totals
     }
@@ -194,6 +209,7 @@ impl Walker<'_> {
             skipped: None,
             other_fs: None,
             types: None,
+            ages: None,
             children: Vec::new(),
         };
 
@@ -285,6 +301,7 @@ impl Walker<'_> {
         }
 
         let mut types = TypeTotals::default();
+        let mut ages = AgeTotals::default();
         let results: Vec<Option<Entry>> = names
             .into_par_iter()
             .map(|name| {
@@ -306,10 +323,12 @@ impl Walker<'_> {
             dir.mtime = dir.mtime.max(child.mtime);
             dir.error |= child.error;
             filetype::add(&mut types, &child.type_totals());
+            age::add(&mut ages, &child.age_totals());
             dir.children.push(child);
         }
 
         dir.types = Some(Box::new(types));
+        dir.ages = Some(Box::new(ages));
 
         // Biggest first: the default order.
         dir.children.sort_by(|a, b| b.disk.cmp(&a.disk));

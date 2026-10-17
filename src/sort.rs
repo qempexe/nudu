@@ -66,13 +66,14 @@ impl Sort {
         natural_desc != self.reverse
     }
 
-    /// Child indexes of `entries`, in display order.
-    pub fn order(self, entries: &[Entry]) -> Vec<usize> {
+    /// Child indexes of `entries`, in display order. `size` says what
+    /// "size" means right now: space on disk, or only the cold part of it.
+    pub fn order(self, entries: &[Entry], size: impl Fn(&Entry) -> u64) -> Vec<usize> {
         let mut order: Vec<usize> = (0..entries.len()).collect();
         order.sort_by(|&a, &b| {
             let (a, b) = (&entries[a], &entries[b]);
             let primary = match self.key {
-                SortKey::Size => a.disk.cmp(&b.disk),
+                SortKey::Size => size(a).cmp(&size(b)),
                 SortKey::Name => compare_names(a, b),
                 SortKey::Items => a.items.cmp(&b.items),
                 SortKey::Modified => a.mtime.cmp(&b.mtime),
@@ -115,12 +116,13 @@ mod tests {
             skipped: None,
             other_fs: None,
             types: None,
+            ages: None,
             children: Vec::new(),
         }
     }
 
     fn names(entries: &[Entry], sort: Sort) -> Vec<String> {
-        sort.order(entries)
+        sort.order(entries, |e| e.disk)
             .into_iter()
             .map(|i| entries[i].name.to_string_lossy().into_owned())
             .collect()

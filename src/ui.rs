@@ -21,6 +21,7 @@ use ratatui::widgets::{Block, BorderType, Clear, HighlightSpacing, List, ListIte
 
 use crate::app::{App, Row};
 use crate::scanning::Snapshot;
+use crate::age::{self, Bucket};
 use crate::filetype::Category;
 use crate::scan::{Entry, Kind, Skipped};
 use crate::units::{group_digits, human_size, relative_time};
@@ -158,19 +159,30 @@ fn block_gauge(ratio: f64, width: usize) -> String {
 
 fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let dir = app.current_dir();
-    let title = Line::from(vec![
-        Span::raw(" "),
-        Span::styled(human_size(dir.disk), Style::new().bold()),
-        Span::styled(" · ", Style::new().fg(MUTED)),
-        Span::raw(format!("{} items ", group_digits(dir.items))),
-    ]);
+    let title = match app.cold {
+        // Cold view: how much old data is in here.
+        Some(cold) => Line::from(vec![
+            Span::raw(" "),
+            Span::styled(human_size(app.size_of(dir)), Style::new().fg(Bucket::Older.color()).bold()),
+            Span::styled(format!(" older than {} ", cold.label()), Style::new().fg(MUTED)),
+        ]),
+        None => Line::from(vec![
+            Span::raw(" "),
+            Span::styled(human_size(dir.disk), Style::new().bold()),
+            Span::styled(" · ", Style::new().fg(MUTED)),
+            Span::raw(format!("{} items ", group_digits(dir.items))),
+        ]),
+    };
     let arrow = if app.sort.descending() { "↓" } else { "↑" };
     let sort_label = Line::from(vec![
         Span::styled(" sort ", Style::new().fg(MUTED)),
         Span::styled(format!("{} {arrow} ", app.sort.key.label()), Style::new().fg(ACCENT)),
     ])
     .right_aligned();
-    let block = pane(title).title(sort_label);
+    let mut block = pane(title).title(sort_label);
+    if app.heat {
+        block = block.title_bottom(heat_legend());
+    }
 
     // Columns: [▸ ][icon ][name…][ size][ bar][ pct]
     let inner = block.inner(area).width.saturating_sub(2) as usize;
@@ -183,24 +195,34 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
         (0, inner.saturating_sub(2 + 1 + 10 + 1 + 4))
     };
 
-    let largest = dir.children.iter().map(|e| e.disk).max().unwrap_or(0);
-    let total = dir.disk;
-    let items: Vec<ListItem> = app
+    let largest = dir.children.iter().map(|e| app.size_of(e)).max().unwrap_or(0);
+    let style = RowStyle {
+        icons: app.settings.icons,
+        heat: app.heat,
+        name_width,
+        bar_width,
+        largest,
+        total: app.size_of(dir),
+    };
+    let mut items: Vec<ListItem> = app
         .rows()
         .into_iter()
         .map(|row| match row {
-            Row::Parent => parent_item(app.settings.icons),
-            Row::Entry(e) => entry_item(e, app.settings.icons, name_width, bar_width, largest, total),
+            Row::Parent => parent_item(style.icons),
+            Row::Entry(e) => entry_item(e, app.size_of(e), &style),
         })
         .collect();
 
     app.page_size = block.inner(area).height.max(1) as usize;
 
-    if items.is_empty() {
-        let empty = Paragraph::new(Line::styled("  (empty directory)", Style::new().fg(MUTED)))
-            .block(block);
-        frame.render_widget(empty, area);
-        return;
+    // Nothing but `..` to show: say why, as an extra (unselectable) row.
+    let parent_rows = usize::from(app.rows().iter().any(|r| matches!(r, Row::Parent)));
+    if items.len() == parent_rows {
+        let text = match app.cold {
+            Some(cold) => format!("  nothing older than {} in here", cold.label()),
+            None => "  (empty directory)".to_string(),
+        };
+        items.push(ListItem::new(Line::styled(text, Style::new().fg(MUTED))));
     }
 
     let list = List::new(items)
@@ -211,6 +233,17 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_stateful_widget(list, area, &mut app.list);
 }
 
+/// `● today ● week ● month ● 6 months ● year ● older` on the list border.
+fn heat_legend() -> Line<'static> {
+    let short = ["today", "week", "month", "6mo", "year", "older"];
+    let mut spans = vec![Span::raw(" ")];
+    for (bucket, label) in Bucket::ALL.into_iter().zip(short) {
+        spans.push(Span::styled("● ", Style::new().fg(bucket.color())));
+        spans.push(Span::styled(format!("{label} "), Style::new().fg(MUTED)));
+    }
+    Line::from(spans).right_aligned()
+}
+
 fn parent_item(icons: bool) -> ListItem<'static> {
     let icon = if icons { "󰁝" } else { "^" };
     ListItem::new(Line::from(vec![
@@ -219,14 +252,21 @@ fn parent_item(icons: bool) -> ListItem<'static> {
     ]))
 }
 
-fn entry_item(
-    entry: &Entry,
+/// What every row of the list shares.
+struct RowStyle {
     icons: bool,
+    heat: bool,
     name_width: usize,
     bar_width: usize,
+    /// The biggest `size` in the folder: its bar is full.
     largest: u64,
+    /// The folder's own `size`, for percentages.
     total: u64,
-) -> ListItem<'static> {
+}
+
+/// `size` is what the size column shows: space on disk, or the cold part.
+fn entry_item(entry: &Entry, size: u64, style: &RowStyle) -> ListItem<'static> {
+    let RowStyle { icons, heat, name_width, bar_width, largest, total } = *style;
     let (icon, icon_color) = icon_for(entry, icons);
     // Skipped folders carry a short tag like `vfat` or `snapshots`.
     let tag = match (&entry.skipped, &entry.other_fs) {
@@ -257,17 +297,22 @@ fn entry_item(
     if !tag.is_empty() {
         spans.push(Span::styled(format!(" {tag}"), Style::new().fg(Color::Yellow)));
     }
-    spans.push(Span::raw(format!(" {:>10}", human_size(entry.disk))));
+    spans.push(Span::raw(format!(" {:>10}", human_size(size))));
+    // In heat mode, the bar is colored by how long ago this last changed.
+    let bucket = Bucket::of(entry.mtime);
+    let bar_color = if heat { bucket.color() } else { ACCENT };
     if bar_width > 0 {
-        let (fill, track) = line_bar(ratio(entry.disk, largest), bar_width);
+        let (fill, track) = line_bar(ratio(size, largest), bar_width);
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(fill, Style::new().fg(ACCENT)));
+        spans.push(Span::styled(fill, Style::new().fg(bar_color)));
         spans.push(Span::styled(track, Style::new().fg(MUTED)));
     }
-    spans.push(Span::styled(
-        format!(" {:>4}", percent(entry.disk, total)),
-        Style::new().fg(MUTED),
-    ));
+    let last = if heat {
+        Span::styled(format!(" {:>4}", age::short(entry.mtime)), Style::new().fg(bucket.color()))
+    } else {
+        Span::styled(format!(" {:>4}", percent(size, total)), Style::new().fg(MUTED))
+    };
+    spans.push(last);
     ListItem::new(Line::from(spans))
 }
 
@@ -398,6 +443,12 @@ fn entry_details(e: &Entry, app: &App, width: usize) -> Vec<Line<'static>> {
         lines.push(field("Filesystem", format!("{fs} (drive)")));
     }
     lines.push(field("Modified", relative_time(app.now, e.mtime)));
+    let bucket = Bucket::of(e.mtime);
+    lines.push(Line::from(vec![
+        Span::styled(format!(" {:<11}", "Heat"), Style::new().fg(MUTED)),
+        Span::styled("● ", Style::new().fg(bucket.color())),
+        Span::raw(bucket.label()),
+    ]));
     if e.error {
         lines.extend(error_lines(e, app));
     }
@@ -421,8 +472,36 @@ fn entry_details(e: &Entry, app: &App, width: usize) -> Vec<Line<'static>> {
         lines.push(Line::default());
         lines.push(heading("By type", None, width));
         lines.extend(by_type(e, app.settings.icons, width));
+
+        lines.push(Line::default());
+        lines.push(heading("By age", None, width));
+        lines.extend(by_age(e, width));
     }
     lines
+}
+
+/// How much of a folder changed recently, and how much has been sitting.
+fn by_age(e: &Entry, width: usize) -> Vec<Line<'static>> {
+    let totals = e.age_totals();
+    let all: u64 = totals.iter().sum();
+    // [ ●][label     ][ size][ bar][ pct]
+    let bar_width = width.saturating_sub(1 + 2 + 11 + 10 + 1 + 5).max(1);
+    Bucket::ALL
+        .into_iter()
+        .filter(|&b| totals[b as usize] > 0)
+        .map(|bucket| {
+            let bytes = totals[bucket as usize];
+            let (fill, track) = line_bar(ratio(bytes, all), bar_width);
+            Line::from(vec![
+                Span::styled(" ● ", Style::new().fg(bucket.color())),
+                Span::raw(format!("{:<11}", bucket.label())),
+                Span::raw(format!("{:>10} ", human_size(bytes))),
+                Span::styled(fill, Style::new().fg(bucket.color())),
+                Span::styled(track, Style::new().fg(MUTED)),
+                Span::styled(format!(" {:>4}", percent(bytes, all)), Style::new().fg(MUTED)),
+            ])
+        })
+        .collect()
 }
 
 /// `Saved  9.3 GiB · 26%` when the data takes less room than its size
@@ -612,6 +691,8 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     if !app.settings.read_only {
         hints.push(("d", "delete"));
     }
+    hints.push(("a", if app.heat { "heat off" } else { "heat" }));
+    hints.push(("A", "cold"));
     hints.push(("r", "rescan"));
     hints.push(("D", "drives"));
     if app.can_sudo() {
@@ -644,6 +725,8 @@ const HELP_RIGHT: &[(&str, &str)] = &[
     ("s n", "sort size / name"),
     ("c m", "sort items / date"),
     ("", "again to reverse"),
+    ("a", "heat colors (age)"),
+    ("A", "cold data view"),
     ("d Del", "delete (asks first)"),
     ("r", "rescan folder"),
     ("S", "rescan with sudo"),

@@ -8,6 +8,7 @@
 //! A `trail` is the list of child indexes from the root down to a folder,
 //! the same one app.rs keeps for navigation.
 
+use crate::age;
 use crate::filetype;
 use crate::scan::Entry;
 
@@ -20,12 +21,16 @@ pub fn folder_mut<'a>(root: &'a mut Entry, trail: &[usize]) -> &'a mut Entry {
 pub fn remove_child(root: &mut Entry, trail: &[usize], index: usize) -> Entry {
     let gone = folder_mut(root, trail).children.remove(index);
     let gone_types = gone.type_totals();
+    let gone_ages = gone.age_totals();
     adjust(root, trail, |dir| {
         dir.apparent = dir.apparent.saturating_sub(gone.apparent);
         dir.disk = dir.disk.saturating_sub(gone.disk);
         dir.items = dir.items.saturating_sub(gone.items + 1);
         if let Some(types) = &mut dir.types {
             filetype::sub(types, &gone_types);
+        }
+        if let Some(ages) = &mut dir.ages {
+            age::sub(ages, &gone_ages);
         }
     });
     gone
@@ -37,6 +42,7 @@ pub fn replace_child(root: &mut Entry, trail: &[usize], index: usize, new: Entry
     let new = &folder_mut(root, trail).children[index];
     let (new_apparent, new_disk, new_items) = (new.apparent, new.disk, new.items);
     let (old_types, new_types) = (old.type_totals(), new.type_totals());
+    let (old_ages, new_ages) = (old.age_totals(), new.age_totals());
     adjust(root, trail, |dir| {
         dir.apparent = dir.apparent.saturating_sub(old.apparent) + new_apparent;
         dir.disk = dir.disk.saturating_sub(old.disk) + new_disk;
@@ -44,6 +50,10 @@ pub fn replace_child(root: &mut Entry, trail: &[usize], index: usize, new: Entry
         if let Some(types) = &mut dir.types {
             filetype::sub(types, &old_types);
             filetype::add(types, &new_types);
+        }
+        if let Some(ages) = &mut dir.ages {
+            age::sub(ages, &old_ages);
+            age::add(ages, &new_ages);
         }
     });
 }
@@ -75,6 +85,7 @@ mod tests {
             skipped: None,
             other_fs: None,
             types: None,
+            ages: None,
             children: Vec::new(),
         }
     }

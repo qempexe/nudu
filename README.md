@@ -12,7 +12,7 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
 │   󰉋 Trash             5.2 GiB ━━━━━━━━━━   6% ││ On disk   62.1 GiB             │
 │   󰈔 data.db         412.0 MiB ━━━━━━━━━━  <1% ││ Modified  3 days ago           │
 ╰───────────────────────────────────────────────╯╰────────────────────────────────╯
- ↑↓ move   ⏎ open   ← back   s n c m sort   d delete   r rescan   D drives   ? help   q quit
+ ↑↓ move   ⏎ open   ← back   s n c m sort   a heat   A cold   d delete   r rescan   D drives   ? help
 ```
 
 ## Features
@@ -28,6 +28,8 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
 - **Safe delete**: always asks first, removes what it can, never enters mounted drives, totals update instantly
 - **Details pane** with sizes, space saved by compression or sparse files, share of the folder,
   the biggest items inside a folder and a breakdown by type (video, images, code, archives...)
+- **Age heat**: `a` colors every bar by when it last changed (today → years ago) and shows its age,
+  `A` switches to a cold view that only shows data older than a year (or six months), sized by how much old data is inside
 - **Filesystem header** showing the filesystem type and how full it is
 - **Follows your terminal theme**: all colors come from your terminal's palette
 
@@ -35,7 +37,6 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
 
 - **Owners**: see which package, app or repo a file belongs to
 - **btrfs-aware sizes**: compression savings and space shared with snapshots
-- **Age heat**: spot files you haven't touched in ages
 
 ## Install
 
@@ -80,6 +81,8 @@ nudu -r           # read-only: deleting is turned off
 | `r` | Rescan the open folder (new files, new mounts) |
 | `D` | List all mounted drives, `Enter` opens one |
 | `g` | Open the drive that was just mounted |
+| `a` | Heat: color bars by age, show age instead of share |
+| `A` | Cold view: only data older than 1 year, again for 6 months, again to turn off |
 | `s` `n` `c` `m` | Sort by size, name, item count, last modified (again to reverse) |
 | `d` / `Del` | Delete the selected entry (asks first, `y` to confirm) |
 | `S` | Rescan with sudo (when some folders were unreadable) |
