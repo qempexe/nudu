@@ -1,0 +1,15 @@
+[package]
+name = "nudu"
+version = "0.1.0"
+edition = "2024"
+description = "NCurses-style Disk Usage, upgraded: ownership, filesystem-aware sizes and age heat"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
