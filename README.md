@@ -7,16 +7,7 @@
 
 A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is eating your disk.
 
-```
- nudu  ~ › .local › share                        btrfs · 410 GiB / 476 GiB ▕████████▋ ▏
-╭─ 91.4 GiB · 412 204 items ───────────────────╮╭─ Steam ────────────────────────╮
-│ ▸ 󰉋 Steam            62.1 GiB ━━━━━━━━━━  68% ││ Type      Directory            │
-│   󰉋 containers       14.0 GiB ━━╸━━━━━━━  15% ││ Size      61.8 GiB             │
-│   󰉋 Trash             5.2 GiB ━━━━━━━━━━   6% ││ On disk   62.1 GiB             │
-│   󰈔 data.db         412.0 MiB ━━━━━━━━━━  <1% ││ Modified  3 days ago           │
-╰───────────────────────────────────────────────╯╰────────────────────────────────╯
- ↑↓ move   ⏎ open   ← back   s n c m sort   a heat   A cold   d delete   r rescan   D drives   ? help
-```
+![nudu scanning / on btrfs: folders ranked by size, mounts and snapshots labeled, details pane with type and age breakdown](assets/screenshot.png)
 
 ## Features
 
