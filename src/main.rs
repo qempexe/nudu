@@ -2,6 +2,7 @@ mod age;
 mod app;
 mod delete;
 mod filetype;
+mod filter;
 mod fsinfo;
 mod mounts;
 mod owners;

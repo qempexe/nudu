@@ -8,7 +8,7 @@
 //! │ ▸ 󰉋 Steam        62.1 GiB ━━━━━━━━  68% ││ Size       62.1 GiB   │
 //! │   󰉋 containers   14.0 GiB ━━╸       15% ││ ...                   │
 //! ╰─────────────────────────────────────────╯╰───────────────────────╯
-//!  ↑↓ move  ⏎ open  ← back  s n c m sort  ? help  q quit
+//!  ↑↓ move  ⏎ open  ← back  / filter  s n c m sort  ? help  q quit
 //! ```
 //!
 //! Colors are the terminal's own ANSI palette, so nudu follows your theme.
@@ -35,6 +35,8 @@ use crate::units::{group_digits, human_size, relative_time};
 const ACCENT: Color = Color::Blue;
 /// Secondary text, borders and empty bar tracks.
 const MUTED: Color = Color::DarkGray;
+/// The part of a name that matches the filter.
+const MATCH: Color = Color::Yellow;
 /// Below this width the details pane is hidden.
 const DETAILS_MIN_WIDTH: u16 = 90;
 const DETAILS_WIDTH: u16 = 34;
@@ -206,6 +208,9 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.heat {
         block = block.title_bottom(heat_legend());
     }
+    if let Some(summary) = filter_summary(app) {
+        block = block.title_bottom(summary);
+    }
 
     // Columns: [▸ ][icon ][name…][ size][ bar][ pct]
     let inner = block.inner(area).width.saturating_sub(2) as usize;
@@ -233,12 +238,16 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
         largest,
         total: app.size_of(dir),
     };
+    let filter = app.active_filter();
     let mut items: Vec<ListItem> = app
         .rows()
         .into_iter()
         .map(|row| match row {
             Row::Parent => parent_item(style.icons),
-            Row::Entry(e) => entry_item(e, app.size_of(e), &style),
+            Row::Entry(e) => {
+                let found = filter.and_then(|f| f.find(&e.name.to_string_lossy()));
+                entry_item(e, app.size_of(e), &style, found)
+            }
         })
         .collect();
 
@@ -247,9 +256,10 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
     // Nothing but `..` to show: say why, as an extra (unselectable) row.
     let parent_rows = usize::from(app.rows().iter().any(|r| matches!(r, Row::Parent)));
     if items.len() == parent_rows {
-        let text = match app.cold {
-            Some(cold) => format!("  nothing older than {} in here", cold.label()),
-            None => "  (empty directory)".to_string(),
+        let text = match (app.active_filter(), app.cold) {
+            (Some(f), _) => format!("  no names contain “{}” · Esc clears the filter", f.query),
+            (None, Some(cold)) => format!("  nothing older than {} in here", cold.label()),
+            (None, None) => "  (empty directory)".to_string(),
         };
         items.push(ListItem::new(Line::styled(text, Style::new().fg(MUTED))));
     }
@@ -260,6 +270,30 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
         .highlight_spacing(HighlightSpacing::Always)
         .highlight_style(Style::new().bg(MUTED).add_modifier(Modifier::BOLD));
     frame.render_stateful_widget(list, area, &mut app.list);
+}
+
+/// `/ steam · 3 of 120 · 62.1 GiB` on the bottom border while filtering.
+fn filter_summary(app: &App) -> Option<Line<'static>> {
+    let filter = app.filter.as_ref()?;
+    if filter.is_empty() && !filter.typing {
+        return None;
+    }
+    let mut spans = vec![
+        Span::styled(" / ", Style::new().fg(ACCENT).bold()),
+        Span::styled(filter.query.clone(), Style::new().fg(MATCH).bold()),
+    ];
+    if !filter.is_empty() {
+        spans.push(Span::styled(" · ", Style::new().fg(MUTED)));
+        spans.push(Span::raw(format!(
+            "{} of {}",
+            group_digits(app.shown_count() as u64),
+            group_digits(app.entries_in_folder() as u64)
+        )));
+        spans.push(Span::styled(" · ", Style::new().fg(MUTED)));
+        spans.push(Span::raw(human_size(app.shown_size())));
+    }
+    spans.push(Span::raw(" "));
+    Some(Line::from(spans).left_aligned())
 }
 
 /// `● today ● week ● month ● 6 months ● year ● older` on the list border.
@@ -296,7 +330,13 @@ struct RowStyle {
 }
 
 /// `size` is what the size column shows: space on disk, or the cold part.
-fn entry_item(entry: &Entry, size: u64, style: &RowStyle) -> ListItem<'static> {
+/// `found` is where the filter matched the name, in characters.
+fn entry_item(
+    entry: &Entry,
+    size: u64,
+    style: &RowStyle,
+    found: Option<(usize, usize)>,
+) -> ListItem<'static> {
     let RowStyle {
         icons,
         heat,
@@ -343,10 +383,11 @@ fn entry_item(entry: &Entry, size: u64, style: &RowStyle) -> ListItem<'static> {
         _ => Style::new(),
     };
 
-    let mut spans = vec![
-        Span::styled(format!("{icon} "), Style::new().fg(icon_color)),
-        Span::styled(name, name_style),
-    ];
+    let mut spans = vec![Span::styled(
+        format!("{icon} "),
+        Style::new().fg(icon_color),
+    )];
+    spans.extend(highlighted(&name, name_style, found));
     if !tag.is_empty() {
         spans.push(Span::styled(format!(" {tag}"), Style::new().fg(tag_color)));
     }
@@ -375,6 +416,27 @@ fn entry_item(entry: &Entry, size: u64, style: &RowStyle) -> ListItem<'static> {
     };
     spans.push(last);
     ListItem::new(Line::from(spans))
+}
+
+/// Splits a (padded or cut) name so the filter match stands out. A match
+/// cut off by `…` is not highlighted.
+fn highlighted(name: &str, style: Style, found: Option<(usize, usize)>) -> Vec<Span<'static>> {
+    let chars: Vec<char> = name.chars().collect();
+    let visible = chars.iter().position(|&c| c == '…').unwrap_or(chars.len());
+    match found {
+        Some((start, end)) if start < end && end <= visible => {
+            let part = |a: usize, b: usize| chars[a..b].iter().collect::<String>();
+            vec![
+                Span::styled(part(0, start), style),
+                Span::styled(
+                    part(start, end),
+                    style.fg(MATCH).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(part(end, chars.len()), style),
+            ]
+        }
+        _ => vec![Span::styled(name.to_string(), style)],
+    }
 }
 
 /// Icon and its color. Nerd Font glyphs, or plain characters with --no-icons.
@@ -835,6 +897,21 @@ fn field(label: &str, value: String) -> Line<'static> {
 // ── Footer ──────────────────────────────────────────────────────────────────
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
+    // Typing a filter: the footer becomes the input line.
+    if let Some(filter) = app.filter.as_ref().filter(|f| f.typing) {
+        let mut spans = vec![
+            Span::styled(" / ", Style::new().fg(ACCENT).bold()),
+            Span::styled(filter.query.clone(), Style::new().fg(MATCH).bold()),
+            Span::styled("▏", Style::new().fg(ACCENT)),
+            Span::raw("   "),
+        ];
+        for (key, label) in [("⏎", "keep"), ("Esc", "clear"), ("↑↓", "move")] {
+            spans.push(Span::styled(key, Style::new().fg(ACCENT).bold()));
+            spans.push(Span::styled(format!(" {label}   "), Style::new().fg(MUTED)));
+        }
+        frame.render_widget(Line::from(spans), area);
+        return;
+    }
     // The result of the last action replaces the hints until the next key.
     if let Some(msg) = &app.message {
         let (mark, color) = if msg.error {
@@ -853,8 +930,12 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         ("↑↓", "move"),
         ("⏎", "open"),
         ("←", "back"),
+        ("/", "filter"),
         ("s n c m", "sort"),
     ];
+    if app.active_filter().is_some() {
+        hints.insert(0, ("Esc", "clear filter"));
+    }
     if !app.settings.read_only {
         hints.push(("d", "delete"));
     }
@@ -887,6 +968,8 @@ const HELP_LEFT: &[(&str, &str)] = &[
     ("⏎ on drive", "scan that drive"),
     ("D", "all drives"),
     ("g", "new drive"),
+    ("/", "filter by name"),
+    ("Esc", "clear filter"),
 ];
 
 const HELP_RIGHT: &[(&str, &str)] = &[

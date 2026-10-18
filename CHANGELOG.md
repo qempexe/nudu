@@ -4,6 +4,13 @@ All notable changes to nudu are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Filter by name (`/`): the list narrows as you type, matches are highlighted, and the list border
+  shows how many entries match and their total size. Smart case: lowercase ignores case, a capital
+  letter makes it exact. `Enter` keeps the filter, `Esc` clears it, opening another folder drops it
+
 ## [0.1.0] - 2026-10-17
 
 First release.
@@ -41,4 +48,5 @@ First release.
 - `install.sh` installs to `/usr/local/bin` so `sudo nudu` works
 - `S` restarts nudu with sudo when folders were unreadable; a `root` badge shows root mode
 
+[Unreleased]: https://github.com/qempexe/nudu/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/qempexe/nudu/releases/tag/v0.1.0

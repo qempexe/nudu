@@ -20,6 +20,7 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
 - **Real sizes**: both apparent size and space actually used on disk, hard links counted once,
   sparse files stay sparse, and on network/FUSE drives that don't report disk use (sshfs, rclone) sizes are estimated and marked `≈`
 - **Sorting** by size, name, item count or last change, in either direction
+- **Filter** (`/`): type part of a name and the list narrows as you type, with the total size of what matches
 - **Safe delete**: always asks first, removes what it can, never enters mounted drives, totals update instantly
 - **Details pane** with sizes, space saved by compression or sparse files, share of the folder,
   the biggest items inside a folder and a breakdown by type (video, images, code, archives...)
@@ -88,6 +89,7 @@ nudu -r           # read-only: deleting is turned off
 | `PgUp` `PgDn` / `Home` `End` | Jump |
 | `Enter` / `→` / `l` | Open folder |
 | `←` / `h` / `<` | Back |
+| `/` | Filter the open folder by name, `Enter` keeps the filter, `Esc` clears it |
 | `Enter` on a drive | Scan that mounted drive and open it |
 | `r` | Rescan the open folder (new files, new mounts) |
 | `D` | List all mounted drives, `Enter` opens one |

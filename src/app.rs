@@ -5,11 +5,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::ListState;
 
 use crate::age::{self, Cold};
 use crate::delete;
+use crate::filter::Filter;
 use crate::fsinfo::FsInfo;
 use crate::mounts::{Drive, MountTable};
 use crate::owners::{self, Owner};
@@ -117,6 +118,9 @@ pub struct App {
     pub show_owners: bool,
     /// `O`: who uses the most space in the open folder.
     pub owners_view: Option<OwnersView>,
+    /// `/`: only show names containing some text. Belongs to the open
+    /// folder, so moving to another folder drops it.
+    pub filter: Option<Filter>,
 }
 
 /// The owners popup: owners of everything in the open folder, biggest first.
@@ -145,6 +149,7 @@ impl App {
             drives: None,
             show_owners: false,
             owners_view: None,
+            filter: None,
             root,
             root_path,
             trail: Vec::new(),
@@ -251,6 +256,9 @@ impl App {
         if self.cold.is_some() {
             // The cold view hides everything without old data in it.
             order.retain(|&i| self.size_of(&children[i]) > 0);
+        }
+        if let Some(filter) = &self.filter {
+            order.retain(|&i| filter.matches(&children[i].name.to_string_lossy()));
         }
         self.order = order;
     }
@@ -450,9 +458,22 @@ impl App {
             }
             return;
         }
+        // While typing a filter, keys go into it.
+        if self.filter.as_ref().is_some_and(|f| f.typing) {
+            self.filter_key(key);
+            return;
+        }
         let page = self.page_size as isize;
         match key.code {
+            // Esc first drops a filter, and only quits when there is none.
+            KeyCode::Esc if self.filter.is_some() => self.set_filter(None),
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            KeyCode::Char('/') => {
+                // Edit the current filter, or start a new one.
+                let mut filter = self.filter.clone().unwrap_or_default();
+                filter.typing = true;
+                self.filter = Some(filter);
+            }
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Char('S') if self.can_sudo() => {
                 self.relaunch_sudo = true;
@@ -483,6 +504,73 @@ impl App {
             },
             _ => {}
         }
+    }
+
+    /// Keys while typing after `/`: the list narrows with every letter.
+    fn filter_key(&mut self, key: KeyEvent) {
+        let Some(mut filter) = self.filter.clone() else {
+            return;
+        };
+        let page = self.page_size as isize;
+        match key.code {
+            KeyCode::Esc => return self.set_filter(None),
+            KeyCode::Enter => {
+                // Keep the filter and go back to browsing (`/` edits it again).
+                filter.typing = false;
+                let keep = (!filter.is_empty()).then_some(filter);
+                return self.set_filter(keep);
+            }
+            KeyCode::Backspace if filter.is_empty() => return self.set_filter(None),
+            KeyCode::Backspace => {
+                filter.query.pop();
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                filter.query.clear();
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                filter.query.push(c);
+            }
+            // Moving works while typing, so you can pick a match right away.
+            KeyCode::Down => return self.move_by(1),
+            KeyCode::Up => return self.move_by(-1),
+            KeyCode::PageDown => return self.move_by(page),
+            KeyCode::PageUp => return self.move_by(-page),
+            _ => return,
+        }
+        self.set_filter(Some(filter));
+    }
+
+    /// Applies a new filter (or none). The cursor stays on the same entry if
+    /// it still matches, otherwise it goes to the first match.
+    fn set_filter(&mut self, filter: Option<Filter>) {
+        let selected = self.list.selected().and_then(|r| self.child_index(r));
+        self.filter = filter;
+        self.refresh_order();
+        *self.list.offset_mut() = 0;
+        let first = usize::from(self.has_parent_row() && !self.order.is_empty());
+        let row = selected.and_then(|i| self.row_of(i)).unwrap_or(first);
+        self.select_row(row);
+    }
+
+    /// The filter's query while it hides something, for the list title.
+    pub fn active_filter(&self) -> Option<&Filter> {
+        self.filter.as_ref().filter(|f| !f.is_empty())
+    }
+
+    /// Number of entries in the open folder, matches or not.
+    pub fn entries_in_folder(&self) -> usize {
+        self.current_dir().children.len()
+    }
+
+    /// Total size of the rows shown, for the filter's summary.
+    pub fn shown_size(&self) -> u64 {
+        let children = &self.current_dir().children;
+        self.order.iter().map(|&i| self.size_of(&children[i])).sum()
+    }
+
+    /// Number of rows shown, not counting `..`.
+    pub fn shown_count(&self) -> usize {
+        self.order.len()
     }
 
     /// Moves the selection by `delta` rows, clamped to the list bounds.
@@ -613,6 +701,7 @@ impl App {
     /// Opens the child folder at `index`.
     fn enter(&mut self, index: usize) {
         self.trail.push(index);
+        self.filter = None;
         self.refresh_order();
         // Start on the first real entry, not on `..`.
         *self.list.offset_mut() = 0;
@@ -690,6 +779,7 @@ impl App {
         self.root_path = path;
         self.settings.scan = opts;
         self.trail.clear();
+        self.filter = None;
         self.fs = FsInfo::for_path(&self.root_path);
         self.mounts_seen = read_mounts();
         *self.list.offset_mut() = 0;
@@ -758,6 +848,7 @@ impl App {
         while !self.trail.is_empty() && !self.current_path().exists() {
             self.trail.pop();
         }
+        self.filter = None;
         *self.list.offset_mut() = 0;
         self.refresh_order();
         self.select_row(0);
@@ -782,6 +873,7 @@ impl App {
     /// Back to the parent directory, with the cursor on the folder we left.
     fn go_up(&mut self) {
         let Some(left) = self.trail.pop() else { return };
+        self.filter = None;
         self.refresh_order();
         *self.list.offset_mut() = 0;
         let row = self.row_of(left).unwrap_or(0);
@@ -799,5 +891,162 @@ fn with_reason(reason: Option<String>, summary: String) -> String {
     match reason {
         Some(reason) => format!("{reason} · {summary}"),
         None => summary,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::crossterm::event::KeyModifiers;
+
+    fn file(name: &str, size: u64) -> Entry {
+        Entry {
+            name: name.into(),
+            kind: Kind::File,
+            apparent: size,
+            disk: size,
+            mtime: 0,
+            items: 0,
+            error: false,
+            skipped: None,
+            other_fs: None,
+            types: None,
+            ages: None,
+            owner: Owner::None,
+            estimated: false,
+            children: Vec::new(),
+        }
+    }
+
+    fn dir(name: &str, children: Vec<Entry>) -> Entry {
+        let mut d = file(name, 0);
+        d.kind = Kind::Dir;
+        for c in &children {
+            d.disk += c.disk;
+            d.apparent += c.apparent;
+            d.items += c.items + 1;
+        }
+        d.children = children;
+        d
+    }
+
+    /// Sorted by size: Steam 60, Trash 30, notes.txt 5, steam.log 2.
+    fn app() -> App {
+        let root = dir(
+            "root",
+            vec![
+                file("notes.txt", 5),
+                dir("Steam", vec![file("game", 60)]),
+                file("steam.log", 2),
+                dir("Trash", vec![file("old", 30)]),
+            ],
+        );
+        let settings = Settings {
+            icons: false,
+            read_only: true,
+            scan: ScanOptions {
+                one_filesystem: true,
+                include: Vec::new(),
+            },
+        };
+        App::new(root, PathBuf::from("/tmp"), None, settings)
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for c in text.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    fn shown(app: &App) -> Vec<String> {
+        app.rows()
+            .into_iter()
+            .map(|r| match r {
+                Row::Parent => "..".into(),
+                Row::Entry(e) => e.name.to_string_lossy().into_owned(),
+            })
+            .collect()
+    }
+
+    fn selected(app: &App) -> String {
+        match app.selected_row() {
+            Some(Row::Entry(e)) => e.name.to_string_lossy().into_owned(),
+            Some(Row::Parent) => "..".into(),
+            None => String::new(),
+        }
+    }
+
+    #[test]
+    fn typing_narrows_the_list() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, "steam");
+        assert_eq!(shown(&app), ["Steam", "steam.log"]);
+        // Letters go into the query, not to the commands they usually are.
+        assert!(!app.should_quit);
+        assert_eq!(app.sort, Sort::default());
+        assert_eq!(app.shown_size(), 62);
+    }
+
+    #[test]
+    fn cursor_stays_on_a_matching_entry() {
+        let mut app = app();
+        press(&mut app, KeyCode::Down); // Trash
+        press(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, "t");
+        assert_eq!(selected(&app), "Trash");
+        // Trash no longer matches: the cursor goes to the first match.
+        type_text(&mut app, "x");
+        assert_eq!(selected(&app), "notes.txt");
+    }
+
+    #[test]
+    fn enter_keeps_and_esc_clears_before_quitting() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, "log");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(shown(&app), ["steam.log"]);
+        // Browsing keys work again once the filter is kept.
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(app.sort.key, SortKey::Name);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(shown(&app).len(), 4);
+        assert_eq!(selected(&app), "steam.log");
+        assert!(!app.should_quit);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn backspace_on_empty_query_closes_it() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, "zz");
+        assert!(shown(&app).is_empty());
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Backspace);
+        assert!(app.filter.is_some());
+        press(&mut app, KeyCode::Backspace);
+        assert!(app.filter.is_none());
+        assert_eq!(shown(&app).len(), 4);
+    }
+
+    #[test]
+    fn changing_folder_drops_the_filter() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, "Steam");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter); // open Steam
+        assert!(app.filter.is_none());
+        assert_eq!(shown(&app), ["..", "game"]);
+        press(&mut app, KeyCode::Left);
+        assert_eq!(shown(&app).len(), 4);
+        assert_eq!(selected(&app), "Steam");
     }
 }
