@@ -14,6 +14,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Shared data on btrfs, XFS and bcachefs: the details pane shows how much of a file or folder is
   also used by snapshots or reflink copies (`Shared`) and what deleting it would really free
   (`If deleted`). `--no-extents` skips the lookup
+- Exclusive view (`x`): sizes, bars and sorting only count data that nothing else shares
+- Deleting shared data: the prompt shows what it really frees, and the message afterwards no longer
+  claims the shared part was freed
 
 ### Fixed
 - The selected row's percent, the empty part of its bar and its tags were invisible

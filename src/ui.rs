@@ -37,6 +37,8 @@ const ACCENT: Color = Color::Blue;
 const MUTED: Color = Color::DarkGray;
 /// The part of a name that matches the filter.
 const MATCH: Color = Color::Yellow;
+/// Data shared with snapshots or copies, and the exclusive view.
+const SHARED: Color = Color::Magenta;
 /// Below this width the details pane is hidden.
 const DETAILS_MIN_WIDTH: u16 = 90;
 const DETAILS_WIDTH: u16 = 34;
@@ -188,6 +190,15 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
                 Style::new().fg(MUTED),
             ),
         ]),
+        // Exclusive view: what deleting this folder would free, at least.
+        None if app.exclusive => Line::from(vec![
+            Span::raw(" "),
+            Span::styled(human_size(app.size_of(dir)), Style::new().fg(SHARED).bold()),
+            Span::styled(
+                format!(" exclusive · {} on disk ", human_size(dir.disk)),
+                Style::new().fg(MUTED),
+            ),
+        ]),
         None => Line::from(vec![
             Span::raw(" "),
             Span::styled(human_size(dir.disk), Style::new().bold()),
@@ -232,6 +243,7 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let style = RowStyle {
         icons: app.settings.icons,
         heat: app.heat,
+        exclusive: app.exclusive,
         owners: app.show_owners,
         name_width,
         bar_width,
@@ -341,6 +353,8 @@ struct RowStyle {
     icons: bool,
     heat: bool,
     /// Show the owner tag after each name (`o`).
+    /// Exclusive view: bars get the shared-data color.
+    exclusive: bool,
     owners: bool,
     name_width: usize,
     bar_width: usize,
@@ -361,6 +375,7 @@ fn entry_item(
     let RowStyle {
         icons,
         heat,
+        exclusive,
         owners,
         name_width,
         bar_width,
@@ -417,7 +432,11 @@ fn entry_item(
     spans.push(Span::raw(format!("{approx}{:>10}", human_size(size))));
     // In heat mode, the bar is colored by how long ago this last changed.
     let bucket = Bucket::of(entry.mtime);
-    let bar_color = if heat { bucket.color() } else { ACCENT };
+    let bar_color = match (heat, exclusive) {
+        (true, _) => bucket.color(),
+        (false, true) => SHARED,
+        (false, false) => ACCENT,
+    };
     if bar_width > 0 {
         let (fill, track) = line_bar(ratio(size, largest), bar_width);
         spans.push(Span::raw(" "));
@@ -606,7 +625,7 @@ fn entry_details(e: &Entry, app: &App, width: usize) -> Vec<Line<'static>> {
     if let Some(line) = savings_line(e) {
         lines.push(line);
     }
-    lines.extend(shared_lines(e));
+    lines.extend(shared_lines(e, app.shared_stale));
     if e.kind == Kind::Dir {
         lines.push(field("Items", group_digits(e.items)));
     }
@@ -721,32 +740,40 @@ fn savings_line(e: &Entry) -> Option<Line<'static>> {
 ///  Shared     50.0 MiB · 100%
 ///  If deleted frees 0 B
 /// ```
-/// Nothing is shown when no data is shared.
-fn shared_lines(e: &Entry) -> Vec<Line<'static>> {
+/// Nothing is shown when no data is shared. `stale` adds a warning: after
+/// deleting shared data, what is left may be shared less than we remember.
+fn shared_lines(e: &Entry, stale: bool) -> Vec<Line<'static>> {
     if e.shared == 0 {
         return Vec::new();
     }
-    vec![
+    let mut lines = vec![
         Line::from(vec![
             Span::styled(format!(" {:<11}", "Shared"), Style::new().fg(MUTED)),
             Span::styled(
                 format!("{} · {}", human_size(e.shared), percent(e.shared, e.disk)),
-                Style::new().fg(Color::Magenta),
+                Style::new().fg(SHARED),
             ),
         ]),
-        field("If deleted", frees_label(e)),
-    ]
+        field("If deleted", format!("frees {}", frees_amount(e))),
+    ];
+    if stale {
+        lines.push(Line::styled(
+            format!(" {:<11}may be outdated · r", ""),
+            Style::new().fg(MUTED),
+        ));
+    }
+    lines
 }
 
-/// `frees 1.2 GiB` for a file. For a folder it is a lower bound (`≥`):
+/// `1.2 GiB` for a file. For a folder it is a lower bound (`≥ 1.2 GiB`):
 /// when two files inside share data with each other, deleting the folder
 /// removes both and frees that data too.
-fn frees_label(e: &Entry) -> String {
+fn frees_amount(e: &Entry) -> String {
     let frees = human_size(e.disk.saturating_sub(e.shared));
     if e.kind == Kind::Dir {
-        format!("frees ≥ {frees}")
+        format!("≥ {frees}")
     } else {
-        format!("frees {frees}")
+        frees
     }
 }
 
@@ -998,6 +1025,16 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     }
     hints.push(("a", if app.heat { "heat off" } else { "heat" }));
     hints.push(("A", "cold"));
+    if app.has_shared() {
+        hints.push((
+            "x",
+            if app.exclusive {
+                "on disk"
+            } else {
+                "exclusive"
+            },
+        ));
+    }
     hints.push(("O", "owners"));
     hints.push(("r", "rescan"));
     hints.push(("D", "drives"));
@@ -1035,6 +1072,7 @@ const HELP_RIGHT: &[(&str, &str)] = &[
     ("", "again to reverse"),
     ("a", "heat colors (age)"),
     ("A", "cold data view"),
+    ("x", "exclusive sizes"),
     ("o", "owner tags"),
     ("O", "owners ranking"),
     ("d Del", "delete (asks first)"),
@@ -1254,6 +1292,21 @@ fn draw_confirm(frame: &mut Frame, app: &App, index: usize) {
     if entry.kind == Kind::Dir {
         lines.push(field("  Items", group_digits(entry.items)));
     }
+    // Shared data stays on disk: say what deleting really gives back.
+    if entry.shared > 0 {
+        lines.push(field("  Frees", frees_amount(entry)));
+        lines.push(Line::styled(
+            format!(
+                "  {} is shared with snapshots or copies",
+                human_size(entry.shared)
+            ),
+            Style::new().fg(SHARED),
+        ));
+        lines.push(Line::styled(
+            "  and stays on disk.",
+            Style::new().fg(SHARED),
+        ));
+    }
     // Package files should be removed with the package manager, so the
     // system's package database stays correct.
     if let Some(package) = entry.owner.package() {
@@ -1470,16 +1523,21 @@ mod tests {
     #[test]
     fn shared_data_is_only_mentioned_when_there_is_some() {
         const MIB: u64 = 1024 * 1024;
-        assert!(shared_lines(&entry(Kind::File, 50 * MIB, 0)).is_empty());
-        assert_eq!(shared_lines(&entry(Kind::File, 50 * MIB, MIB)).len(), 2);
-        // A fully shared file frees nothing; a folder's number is a minimum.
+        assert!(shared_lines(&entry(Kind::File, 50 * MIB, 0), false).is_empty());
         assert_eq!(
-            frees_label(&entry(Kind::File, 50 * MIB, 50 * MIB)),
-            "frees 0 B"
+            shared_lines(&entry(Kind::File, 50 * MIB, MIB), false).len(),
+            2
         );
+        // After a delete, an extra line warns the number may be outdated.
         assert_eq!(
-            frees_label(&entry(Kind::Dir, 50 * MIB, 20 * MIB)),
-            "frees ≥ 30.0 MiB"
+            shared_lines(&entry(Kind::File, 50 * MIB, MIB), true).len(),
+            3
+        );
+        // A fully shared file frees nothing; a folder's number is a minimum.
+        assert_eq!(frees_amount(&entry(Kind::File, 50 * MIB, 50 * MIB)), "0 B");
+        assert_eq!(
+            frees_amount(&entry(Kind::Dir, 50 * MIB, 20 * MIB)),
+            "≥ 30.0 MiB"
         );
     }
 

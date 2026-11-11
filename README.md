@@ -20,7 +20,8 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
 - **Real sizes**: both apparent size and space actually used on disk, hard links counted once,
   sparse files stay sparse, and on network/FUSE drives that don't report disk use (sshfs, rclone) sizes are estimated and marked `≈`
 - **Shared data** (btrfs, XFS, bcachefs): shows how much of a file or folder is also used by snapshots
-  or reflink copies, and how much deleting it would really free
+  or reflink copies, and how much deleting it would really free. `x` switches to an exclusive view
+  that sizes everything by what deleting it gives back, and the delete prompt says the same
 - **Sorting** by size, name, item count or last change, in either direction
 - **Filter** (`/`): type part of a name and the list narrows as you type, with the total size of what matches
 - **Safe delete**: always asks first, removes what it can, never enters mounted drives, totals update instantly
@@ -37,7 +38,6 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
 
 ### Planned
 
-- **Exclusive view**: sizes that only count what deleting would free
 - **btrfs compression** shown in the header
 
 ## Install
@@ -100,6 +100,7 @@ nudu -r           # read-only: deleting is turned off
 | `g` | Open the drive that was just mounted |
 | `a` | Heat: color bars by age, show age instead of share |
 | `A` | Cold view: only data older than 1 year, again for 6 months, again to turn off |
+| `x` | Exclusive view: sizes only count data not shared with snapshots or copies |
 | `o` | Show owner tags in the list |
 | `O` | Owners ranking: who uses the most space in this folder |
 | `s` `n` `c` `m` | Sort by size, name, item count, last modified (again to reverse) |

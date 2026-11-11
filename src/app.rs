@@ -100,6 +100,12 @@ pub struct App {
     pub heat: bool,
     /// `A`: only show data older than this, sized by how much of it there is.
     pub cold: Option<Cold>,
+    /// `x`: sizes only count what deleting would free (data that is not
+    /// shared with snapshots or copies).
+    pub exclusive: bool,
+    /// A delete removed shared data, so `shared` on what is left may be
+    /// too high until the next rescan.
+    pub shared_stale: bool,
     /// Child index waiting for the user to confirm its deletion.
     pub confirm: Option<usize>,
     /// Child index being deleted right now (drawn as "deleting...").
@@ -140,6 +146,8 @@ impl App {
             now,
             heat: false,
             cold: None,
+            exclusive: false,
+            shared_stale: false,
             confirm: None,
             deleting: None,
             message: None,
@@ -240,12 +248,40 @@ impl App {
         self.root.error && !self.is_root
     }
 
-    /// What the size column shows for an entry: its space on disk, or in
-    /// the cold view only the part of it that is old.
+    /// What the size column shows for an entry: its space on disk, in the
+    /// cold view only the part of it that is old, or in the exclusive view
+    /// only the part nothing else shares.
     pub fn size_of(&self, entry: &Entry) -> u64 {
         match self.cold {
             Some(cold) => cold.bytes(&entry.age_totals()),
+            None if self.exclusive => entry.disk.saturating_sub(entry.shared),
             None => entry.disk,
+        }
+    }
+
+    /// True when the scan found data shared with snapshots or copies.
+    pub fn has_shared(&self) -> bool {
+        self.root.shared > 0
+    }
+
+    /// `x`: switch between space on disk and exclusive sizes.
+    fn toggle_exclusive(&mut self) {
+        if !self.exclusive && !self.has_shared() {
+            self.note("Nothing here is shared with snapshots or copies.", false);
+            return;
+        }
+        let selected = self.list.selected().and_then(|r| self.child_index(r));
+        self.exclusive = !self.exclusive;
+        // One special view at a time: cold sizes can't also be exclusive.
+        self.cold = None;
+        self.refresh_order();
+        let row = selected.and_then(|i| self.row_of(i)).unwrap_or(0);
+        *self.list.offset_mut() = 0;
+        self.select_row(row);
+        if self.exclusive {
+            self.note("Exclusive view: what deleting would free", false);
+        } else {
+            self.note("Exclusive view off", false);
         }
     }
 
@@ -268,6 +304,7 @@ impl App {
     fn cycle_cold(&mut self) {
         let selected = self.list.selected().and_then(|r| self.child_index(r));
         self.cold = Cold::next(self.cold);
+        self.exclusive = false;
         self.refresh_order();
         let row = selected.and_then(|i| self.row_of(i)).unwrap_or(0);
         *self.list.offset_mut() = 0;
@@ -498,6 +535,7 @@ impl App {
             KeyCode::Char('O') => self.open_owners(),
             KeyCode::Char('a') => self.heat = !self.heat,
             KeyCode::Char('A') => self.cycle_cold(),
+            KeyCode::Char('x') => self.toggle_exclusive(),
             KeyCode::Char('g') => match self.new_drive.clone() {
                 Some(path) => self.job = Some(Job::OpenRoot { path, reason: None }),
                 None => self.note("No new drive yet · D lists all drives", false),
@@ -628,6 +666,8 @@ impl App {
     /// Deletes for real, then fixes totals, cursor and the header.
     fn perform_delete(&mut self, index: usize) {
         let name = self.child(index).name.to_string_lossy().into_owned();
+        // Shared data stays on disk for whoever else uses it.
+        let shared = self.child(index).shared;
         let row = self.list.selected().unwrap_or(0);
         let dir_path = self.current_path();
 
@@ -643,7 +683,16 @@ impl App {
         self.select_row(row);
         self.fs = FsInfo::for_path(&self.root_path);
 
-        let freed = human_size(outcome.freed);
+        let freed = if shared > 0 {
+            self.shared_stale = true;
+            format!(
+                "about {} ({} was shared and stays on disk)",
+                human_size(outcome.freed.saturating_sub(shared)),
+                human_size(shared.min(outcome.freed))
+            )
+        } else {
+            human_size(outcome.freed)
+        };
         match outcome.error {
             None => self.note(&format!("Deleted {name} · freed {freed}"), false),
             Some(e) => self.note(
@@ -799,6 +848,7 @@ impl App {
     /// `r`: scans the open folder again, picking up new files and mounts.
     fn rescan(&mut self, terminal: &mut DefaultTerminal, reason: Option<String>) -> io::Result<()> {
         let path = self.current_path();
+        self.shared_stale = false;
         let mut fresh = match scanning::run(terminal, &path, self.settings.scan.clone())? {
             scanning::Outcome::Done(entry) => entry,
             scanning::Outcome::Cancelled => return Ok(()),
@@ -982,6 +1032,30 @@ mod tests {
             Some(Row::Parent) => "..".into(),
             None => String::new(),
         }
+    }
+
+    #[test]
+    fn exclusive_view_counts_only_unshared_data() {
+        let mut app = app();
+        // Nothing shared: the view refuses to turn on.
+        press(&mut app, KeyCode::Char('x'));
+        assert!(!app.exclusive);
+
+        // Steam (60) is fully shared, so Trash (30) becomes the biggest.
+        app.root.children[1].shared = 60;
+        app.root.shared = 60;
+        press(&mut app, KeyCode::Char('x'));
+        assert!(app.exclusive);
+        assert_eq!(shown(&app), ["Trash", "notes.txt", "steam.log", "Steam"]);
+        assert_eq!(app.size_of(&app.root), 37);
+
+        // The cold view takes over, and x comes back to plain sizes.
+        press(&mut app, KeyCode::Char('A'));
+        assert!(!app.exclusive);
+        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Char('x'));
+        assert!(!app.exclusive && app.cold.is_none());
+        assert_eq!(shown(&app)[0], "Steam");
     }
 
     #[test]
