@@ -7,7 +7,7 @@
 
 A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is eating your disk.
 
-![nudu scanning / on btrfs: folders ranked by size, mounts and snapshots labeled, details pane with type and age breakdown](assets/screenshot.png)
+![nudu scanning / on btrfs with zstd compression: folders ranked by size, two entries marked for deleting, and a details pane showing data shared with snapshots, plus type and age breakdowns](assets/screenshot.png)
 
 ## Features
 
