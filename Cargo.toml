@@ -14,6 +14,7 @@ rust-version = "1.88"
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
+libc = "0.2.191"
 ratatui = "0.30.2"
 rayon = "1.12.0"
 rustix = { version = "1.1.5", features = ["fs", "process"] }

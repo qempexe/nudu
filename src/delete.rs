@@ -132,6 +132,7 @@ mod tests {
         let opts = ScanOptions {
             one_filesystem: true,
             include: Vec::new(),
+            extents: true,
         };
         let progress = Progress::default();
         let mut root = scan::scan(&base, opts.clone(), &progress).unwrap().unwrap();

@@ -1,6 +1,7 @@
 mod age;
 mod app;
 mod delete;
+mod extents;
 mod filetype;
 mod filter;
 mod fsinfo;
@@ -42,6 +43,10 @@ struct Args {
     /// Turn off deleting
     #[arg(long, short = 'r')]
     read_only: bool,
+
+    /// Skip looking for data shared with snapshots and copies (faster on btrfs/XFS)
+    #[arg(long)]
+    no_extents: bool,
 
     /// Number of scanning threads (default: one per CPU core)
     #[arg(long, short = 't', value_name = "N")]
@@ -107,6 +112,7 @@ fn run(
     let opts = ScanOptions {
         one_filesystem: !args.cross_fs,
         include: Vec::new(),
+        extents: !args.no_extents,
     };
     let root = match scanning::run(terminal, &path, opts.clone())? {
         scanning::Outcome::Done(root) => root,

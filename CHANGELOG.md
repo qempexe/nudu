@@ -11,6 +11,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
   shows how many entries match and their total size. Smart case: lowercase ignores case, a capital
   letter makes it exact. `Enter` keeps the filter, `Esc` clears it, opening another folder drops it
 
+- Shared data on btrfs, XFS and bcachefs: the details pane shows how much of a file or folder is
+  also used by snapshots or reflink copies (`Shared`) and what deleting it would really free
+  (`If deleted`). `--no-extents` skips the lookup
+
 ### Fixed
 - The selected row's percent, the empty part of its bar and its tags were invisible
   (gray on the gray highlight); they now use the normal text color

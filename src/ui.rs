@@ -606,6 +606,7 @@ fn entry_details(e: &Entry, app: &App, width: usize) -> Vec<Line<'static>> {
     if let Some(line) = savings_line(e) {
         lines.push(line);
     }
+    lines.extend(shared_lines(e));
     if e.kind == Kind::Dir {
         lines.push(field("Items", group_digits(e.items)));
     }
@@ -712,6 +713,41 @@ fn savings_line(e: &Entry) -> Option<Line<'static>> {
         ]));
     }
     None
+}
+
+/// The part of an entry that snapshots or reflink copies also use, and
+/// what deleting it would really give back:
+/// ```text
+///  Shared     50.0 MiB · 100%
+///  If deleted frees 0 B
+/// ```
+/// Nothing is shown when no data is shared.
+fn shared_lines(e: &Entry) -> Vec<Line<'static>> {
+    if e.shared == 0 {
+        return Vec::new();
+    }
+    vec![
+        Line::from(vec![
+            Span::styled(format!(" {:<11}", "Shared"), Style::new().fg(MUTED)),
+            Span::styled(
+                format!("{} · {}", human_size(e.shared), percent(e.shared, e.disk)),
+                Style::new().fg(Color::Magenta),
+            ),
+        ]),
+        field("If deleted", frees_label(e)),
+    ]
+}
+
+/// `frees 1.2 GiB` for a file. For a folder it is a lower bound (`≥`):
+/// when two files inside share data with each other, deleting the folder
+/// removes both and frees that data too.
+fn frees_label(e: &Entry) -> String {
+    let frees = human_size(e.disk.saturating_sub(e.shared));
+    if e.kind == Kind::Dir {
+        format!("frees ≥ {frees}")
+    } else {
+        format!("frees {frees}")
+    }
 }
 
 fn error_lines(e: &Entry, app: &App) -> Vec<Line<'static>> {
@@ -1410,6 +1446,42 @@ fn pane(title: Line<'static>) -> Block<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(kind: Kind, disk: u64, shared: u64) -> Entry {
+        Entry {
+            name: "x".into(),
+            kind,
+            apparent: disk,
+            disk,
+            shared,
+            mtime: 0,
+            items: 0,
+            error: false,
+            skipped: None,
+            other_fs: None,
+            types: None,
+            ages: None,
+            owner: Owner::None,
+            estimated: false,
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn shared_data_is_only_mentioned_when_there_is_some() {
+        const MIB: u64 = 1024 * 1024;
+        assert!(shared_lines(&entry(Kind::File, 50 * MIB, 0)).is_empty());
+        assert_eq!(shared_lines(&entry(Kind::File, 50 * MIB, MIB)).len(), 2);
+        // A fully shared file frees nothing; a folder's number is a minimum.
+        assert_eq!(
+            frees_label(&entry(Kind::File, 50 * MIB, 50 * MIB)),
+            "frees 0 B"
+        );
+        assert_eq!(
+            frees_label(&entry(Kind::Dir, 50 * MIB, 20 * MIB)),
+            "frees ≥ 30.0 MiB"
+        );
+    }
 
     #[test]
     fn line_bar_halves() {

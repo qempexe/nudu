@@ -822,6 +822,7 @@ name = "nudu"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "libc",
  "ratatui",
  "rayon",
  "rustix",

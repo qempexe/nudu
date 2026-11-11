@@ -723,6 +723,7 @@ impl App {
         let opts = ScanOptions {
             one_filesystem: true,
             include: Vec::new(),
+            extents: self.settings.scan.extents,
         };
         let mut scanned = match scanning::run(terminal, &path, opts)? {
             scanning::Outcome::Done(entry) => entry,
@@ -765,6 +766,7 @@ impl App {
         let opts = ScanOptions {
             one_filesystem: self.settings.scan.one_filesystem,
             include: Vec::new(),
+            extents: self.settings.scan.extents,
         };
         let root = match scanning::run(terminal, &path, opts.clone())? {
             scanning::Outcome::Done(root) => root,
@@ -905,6 +907,7 @@ mod tests {
             kind: Kind::File,
             apparent: size,
             disk: size,
+            shared: 0,
             mtime: 0,
             items: 0,
             error: false,
@@ -947,6 +950,7 @@ mod tests {
             scan: ScanOptions {
                 one_filesystem: true,
                 include: Vec::new(),
+                extents: false,
             },
         };
         App::new(root, PathBuf::from("/tmp"), None, settings)

@@ -622,6 +622,7 @@ mod tests {
         let opts = crate::scan::ScanOptions {
             one_filesystem: true,
             include: Vec::new(),
+            extents: true,
         };
         let mut tree = crate::scan::scan(&root, opts, &Default::default())
             .unwrap()

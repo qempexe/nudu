@@ -110,6 +110,7 @@ mod tests {
             kind: Kind::File,
             apparent: disk,
             disk,
+            shared: 0,
             mtime,
             items: 0,
             error: false,

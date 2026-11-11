@@ -25,6 +25,7 @@ pub fn remove_child(root: &mut Entry, trail: &[usize], index: usize) -> Entry {
     adjust(root, trail, |dir| {
         dir.apparent = dir.apparent.saturating_sub(gone.apparent);
         dir.disk = dir.disk.saturating_sub(gone.disk);
+        dir.shared = dir.shared.saturating_sub(gone.shared);
         dir.items = dir.items.saturating_sub(gone.items + 1);
         if let Some(types) = &mut dir.types {
             filetype::sub(types, &gone_types);
@@ -41,11 +42,13 @@ pub fn replace_child(root: &mut Entry, trail: &[usize], index: usize, new: Entry
     let old = std::mem::replace(&mut folder_mut(root, trail).children[index], new);
     let new = &folder_mut(root, trail).children[index];
     let (new_apparent, new_disk, new_items) = (new.apparent, new.disk, new.items);
+    let new_shared = new.shared;
     let (old_types, new_types) = (old.type_totals(), new.type_totals());
     let (old_ages, new_ages) = (old.age_totals(), new.age_totals());
     adjust(root, trail, |dir| {
         dir.apparent = dir.apparent.saturating_sub(old.apparent) + new_apparent;
         dir.disk = dir.disk.saturating_sub(old.disk) + new_disk;
+        dir.shared = dir.shared.saturating_sub(old.shared) + new_shared;
         dir.items = dir.items.saturating_sub(old.items) + new_items;
         if let Some(types) = &mut dir.types {
             filetype::sub(types, &old_types);
@@ -79,6 +82,7 @@ mod tests {
             kind: Kind::File,
             apparent: size,
             disk: size,
+            shared: 0,
             mtime: 0,
             items: 0,
             error: false,
@@ -98,6 +102,7 @@ mod tests {
         for c in &children {
             d.apparent += c.apparent;
             d.disk += c.disk;
+            d.shared += c.shared;
             d.items += c.items + 1;
         }
         d.children = children;
@@ -121,6 +126,24 @@ mod tests {
         assert_eq!(root.children[0].items, 1);
         assert_eq!(root.disk, 15);
         assert_eq!(root.items, 3);
+    }
+
+    #[test]
+    fn shared_bytes_follow_deletes_and_rescans() {
+        let mut y = file("y", 20);
+        y.shared = 20;
+        let mut b = file("b", 5);
+        b.shared = 3;
+        let mut root = dir("root", vec![dir("a", vec![file("x", 10), y]), b]);
+        assert_eq!(root.shared, 23);
+
+        remove_child(&mut root, &[0], 1); // a/y
+        assert_eq!(root.children[0].shared, 0);
+        assert_eq!(root.shared, 3);
+
+        // b rescanned: nothing shares its data any more.
+        replace_child(&mut root, &[], 1, file("b", 5));
+        assert_eq!(root.shared, 0);
     }
 
     #[test]

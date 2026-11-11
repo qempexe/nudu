@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use rayon::prelude::*;
 
 use crate::age::{self, AgeTotals, Bucket};
+use crate::extents;
 use crate::filetype::{self, Category, TypeTotals};
 use crate::mounts::{self, Mount, MountTable};
 use crate::owners::Owner;
@@ -43,6 +44,9 @@ pub struct Entry {
     pub apparent: u64,
     /// Space actually allocated on disk (blocks * 512).
     pub disk: u64,
+    /// Bytes of `disk` that are shared with other files (btrfs snapshots,
+    /// reflink copies). Deleting this entry frees only `disk - shared`.
+    pub shared: u64,
     /// Last modification time, seconds since the Unix epoch.
     pub mtime: i64,
     /// Number of entries below this one (for directories).
@@ -119,6 +123,9 @@ pub struct ScanOptions {
     /// Mount points to scan even when `one_filesystem` is set: drives the
     /// user opened, so a rescan keeps showing their contents.
     pub include: Vec<PathBuf>,
+    /// Find data shared with snapshots and copies (btrfs, XFS, bcachefs).
+    /// Costs one extra system call per file there, nothing elsewhere.
+    pub extents: bool,
 }
 
 /// Live counters the UI reads while a scan is running.
@@ -190,8 +197,14 @@ pub fn scan(path: &Path, opts: ScanOptions, progress: &Progress) -> std::io::Res
         lacks_blocks: Mutex::new(HashMap::new()),
         progress,
     };
+    // Only filesystems that can share data are asked about it.
+    let share = walker.opts.extents
+        && walker
+            .root_mount
+            .as_ref()
+            .is_some_and(|m| extents::can_share(&m.fs_type));
     let name = path.as_os_str().to_owned();
-    let root = walker.visit(path, name, &meta, meta.dev());
+    let root = walker.visit(path, name, &meta, meta.dev(), share);
     Ok((!progress.cancelled()).then_some(root))
 }
 
@@ -211,7 +224,15 @@ impl Walker<'_> {
 
     /// `parent_dev` is the device of the folder containing `path`; a change
     /// of device means we are crossing into another mount or subvolume.
-    fn visit(&self, path: &Path, name: OsString, meta: &fs::Metadata, parent_dev: u64) -> Entry {
+    /// `share` says whether this filesystem can share data between files.
+    fn visit(
+        &self,
+        path: &Path,
+        name: OsString,
+        meta: &fs::Metadata,
+        parent_dev: u64,
+        mut share: bool,
+    ) -> Entry {
         let ft = meta.file_type();
         let kind = if ft.is_dir() {
             Kind::Dir
@@ -228,6 +249,7 @@ impl Walker<'_> {
             kind,
             apparent: meta.len(),
             disk: meta.blocks() * 512,
+            shared: 0,
             mtime: meta.mtime(),
             items: 0,
             error: false,
@@ -266,18 +288,30 @@ impl Walker<'_> {
             }
         }
 
+        // How much of this file's data do snapshots or copies also use?
+        // Unreadable files just count as not shared.
+        if share && kind == Kind::File && entry.disk > 0 {
+            entry.shared = extents::shared_bytes(path, entry.disk).unwrap_or(0);
+        }
+
         self.progress.items.fetch_add(1, Ordering::Relaxed);
         self.progress.bytes.fetch_add(entry.disk, Ordering::Relaxed);
 
         if kind == Kind::Dir {
             if meta.dev() != parent_dev {
                 match self.boundary(path) {
-                    Crossing::Scan { other_fs } => entry.other_fs = other_fs,
+                    Crossing::Scan { other_fs } => {
+                        // Another drive: its own filesystem decides.
+                        if let Some(fs_type) = &other_fs {
+                            share = self.opts.extents && extents::can_share(fs_type);
+                        }
+                        entry.other_fs = other_fs;
+                    }
                     Crossing::Skip(why) => entry.skipped = Some(why),
                 }
             }
             if entry.skipped.is_none() {
-                self.read_children(path, &mut entry, meta.dev());
+                self.read_children(path, &mut entry, meta.dev(), share);
             }
         }
 
@@ -312,7 +346,7 @@ impl Walker<'_> {
         }
     }
 
-    fn read_children(&self, path: &Path, dir: &mut Entry, dev: u64) {
+    fn read_children(&self, path: &Path, dir: &mut Entry, dev: u64, share: bool) {
         if self.progress.cancelled() {
             return;
         }
@@ -349,7 +383,7 @@ impl Walker<'_> {
                 let child_path = path.join(&name);
                 // symlink_metadata: never follow symlinks, so nothing is counted twice.
                 let meta = fs::symlink_metadata(&child_path).ok()?;
-                Some(self.visit(&child_path, name, &meta, dev))
+                Some(self.visit(&child_path, name, &meta, dev, share))
             })
             .collect();
 
@@ -360,6 +394,7 @@ impl Walker<'_> {
             };
             dir.apparent += child.apparent;
             dir.disk += child.disk;
+            dir.shared += child.shared;
             dir.items += child.items + 1;
             dir.estimated |= child.estimated;
             dir.mtime = dir.mtime.max(child.mtime);

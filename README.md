@@ -19,6 +19,8 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
   mounted (`g` jumps straight there)
 - **Real sizes**: both apparent size and space actually used on disk, hard links counted once,
   sparse files stay sparse, and on network/FUSE drives that don't report disk use (sshfs, rclone) sizes are estimated and marked `≈`
+- **Shared data** (btrfs, XFS, bcachefs): shows how much of a file or folder is also used by snapshots
+  or reflink copies, and how much deleting it would really free
 - **Sorting** by size, name, item count or last change, in either direction
 - **Filter** (`/`): type part of a name and the list narrows as you type, with the total size of what matches
 - **Safe delete**: always asks first, removes what it can, never enters mounted drives, totals update instantly
@@ -35,7 +37,8 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
 
 ### Planned
 
-- **btrfs-aware sizes**: compression savings and space shared with snapshots
+- **Exclusive view**: sizes that only count what deleting would free
+- **btrfs compression** shown in the header
 
 ## Install
 
@@ -80,6 +83,7 @@ nudu ~            # your home folder
 nudu / --cross-fs # everything, including other mounted filesystems
 nudu --no-icons   # plain characters if you don't use a Nerd Font
 nudu -t 4         # limit scanning to 4 threads
+nudu --no-extents # skip the shared-data lookup (faster on btrfs/XFS)
 nudu -r           # read-only: deleting is turned off
 ```
 
