@@ -38,6 +38,8 @@ const ACCENT: Color = Color::Blue;
 const MUTED: Color = Color::DarkGray;
 /// The part of a name that matches the filter.
 const MATCH: Color = Color::Yellow;
+/// Entries marked for deleting.
+const MARKED: Color = Color::Red;
 /// Data shared with snapshots or copies, and the exclusive view.
 const SHARED: Color = Color::Magenta;
 /// Below this width the details pane is hidden.
@@ -71,6 +73,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if let Some(index) = app.deleting {
         draw_deleting(frame, app, index);
+    }
+    if app.confirm_marks {
+        draw_confirm_marks(frame, app);
+    }
+    if app.deleting_marks {
+        draw_deleting_marks(frame, app);
     }
     if app.drives.is_some() {
         draw_drives(frame, app);
@@ -231,6 +239,9 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
     if let Some(summary) = filter_summary(app) {
         block = block.title_bottom(summary);
     }
+    if let Some(summary) = marks_summary(app) {
+        block = block.title_bottom(summary);
+    }
 
     // Columns: [▸ ][icon ][name…][ size][ bar][ pct]
     let inner = block.inner(area).width.saturating_sub(2) as usize;
@@ -261,6 +272,8 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
     };
     let filter = app.active_filter();
     let selected = app.list.selected();
+    // Only worth building paths for when something is marked.
+    let dir_path = (!app.marks.is_empty()).then(|| app.current_path());
     let mut items: Vec<ListItem> = app
         .rows()
         .into_iter()
@@ -270,7 +283,10 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
                 Row::Parent => parent_item(style.icons),
                 Row::Entry(e) => {
                     let found = filter.and_then(|f| f.find(&e.name.to_string_lossy()));
-                    entry_item(e, app.size_of(e), &style, found)
+                    let marked = dir_path
+                        .as_ref()
+                        .is_some_and(|dir| app.is_marked(&dir.join(&e.name)));
+                    entry_item(e, app.size_of(e), &style, found, marked)
                 }
             };
             ListItem::new(if selected == Some(i) {
@@ -326,6 +342,26 @@ fn filter_summary(app: &App) -> Option<Line<'static>> {
     Some(Line::from(spans).left_aligned())
 }
 
+/// `3 marked · 1.2 GiB` on the bottom border while entries are marked.
+fn marks_summary(app: &App) -> Option<Line<'static>> {
+    if app.marks.is_empty() {
+        return None;
+    }
+    let marked = app.marked_entries();
+    let size: u64 = marked.iter().map(|(_, e)| e.disk).sum();
+    Some(
+        Line::from(vec![
+            Span::styled(
+                format!(" {} marked", group_digits(marked.len() as u64)),
+                Style::new().fg(MARKED).bold(),
+            ),
+            Span::styled(" · ", Style::new().fg(MUTED)),
+            Span::raw(format!("{} ", human_size(size))),
+        ])
+        .left_aligned(),
+    )
+}
+
 /// `● today ● week ● month ● 6 months ● year ● older` on the list border.
 fn heat_legend() -> Line<'static> {
     let short = ["today", "week", "month", "6mo", "year", "older"];
@@ -375,11 +411,13 @@ struct RowStyle {
 
 /// `size` is what the size column shows: space on disk, or the cold part.
 /// `found` is where the filter matched the name, in characters.
+/// `marked` entries (space) swap their icon for a red check.
 fn entry_item(
     entry: &Entry,
     size: u64,
     style: &RowStyle,
     found: Option<(usize, usize)>,
+    marked: bool,
 ) -> Line<'static> {
     let RowStyle {
         icons,
@@ -391,7 +429,11 @@ fn entry_item(
         largest,
         total,
     } = *style;
-    let (icon, icon_color) = icon_for(entry, icons);
+    let (icon, icon_color) = match (marked, icons) {
+        (true, true) => ("󰄬", MARKED),
+        (true, false) => ("*", MARKED),
+        (false, _) => icon_for(entry, icons),
+    };
     // Skipped folders carry a short tag like `vfat` or `snapshots`.
     let tag = match (&entry.skipped, &entry.other_fs) {
         (Some(skipped), _) => skipped_tag(skipped),
@@ -1029,7 +1071,11 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     if app.active_filter().is_some() {
         hints.insert(0, ("Esc", "clear filter"));
     }
-    if !app.settings.read_only {
+    if !app.marks.is_empty() {
+        hints.insert(0, ("Esc", "unmark all"));
+        hints.insert(0, ("d", "delete marked"));
+    } else if !app.settings.read_only {
+        hints.push(("␣", "mark"));
         hints.push(("d", "delete"));
     }
     hints.push(("a", if app.heat { "heat off" } else { "heat" }));
@@ -1072,7 +1118,8 @@ const HELP_LEFT: &[(&str, &str)] = &[
     ("D", "all drives"),
     ("g", "new drive"),
     ("/", "filter by name"),
-    ("Esc", "clear filter"),
+    ("Esc", "clear filter / marks"),
+    ("Space", "mark, d deletes all"),
 ];
 
 const HELP_RIGHT: &[(&str, &str)] = &[
@@ -1375,6 +1422,126 @@ fn draw_confirm(frame: &mut Frame, app: &App, index: usize) {
 }
 
 /// Shown for the moment a delete takes.
+/// The delete prompt for a batch of marked entries.
+fn draw_confirm_marks(frame: &mut Frame, app: &App) {
+    /// More marked entries than this are summed up as "and N more".
+    const SHOWN: usize = 6;
+    let marked = app.marked_entries();
+    let width = 56u16.min(frame.area().width);
+    let inner = width.saturating_sub(6) as usize;
+    let size: u64 = marked.iter().map(|(_, e)| e.disk).sum();
+    let shared: u64 = marked.iter().map(|(_, e)| e.shared).sum();
+    let items: u64 = marked.iter().map(|(_, e)| e.items).sum();
+
+    let mut lines = vec![Line::default()];
+    for (path, entry) in marked.iter().take(SHOWN) {
+        let (icon, icon_color) = icon_for(entry, app.settings.icons);
+        let shown = crate::units::shorten_home(path);
+        let room = inner.saturating_sub(2 + 11);
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {icon} "), Style::new().fg(icon_color)),
+            Span::raw(format!("{:<room$}", fit_left(&shown, room))),
+            Span::styled(
+                format!("{:>11}", human_size(entry.disk)),
+                Style::new().fg(MUTED),
+            ),
+        ]));
+    }
+    if marked.len() > SHOWN {
+        lines.push(Line::styled(
+            format!("    and {} more", marked.len() - SHOWN),
+            Style::new().fg(MUTED),
+        ));
+    }
+    lines.push(Line::default());
+    lines.push(field("  Size", format!("{} on disk", human_size(size))));
+    if items > 0 {
+        let noun = if items == 1 { "item" } else { "items" };
+        lines.push(field("  Inside", format!("{} {noun}", group_digits(items))));
+    }
+    if shared > 0 {
+        lines.push(field(
+            "  Frees",
+            format!("≥ {}", human_size(size.saturating_sub(shared))),
+        ));
+        lines.push(Line::styled(
+            format!(
+                "  {} is shared with snapshots or copies",
+                human_size(shared)
+            ),
+            Style::new().fg(SHARED),
+        ));
+        lines.push(Line::styled(
+            "  and may stay on disk.",
+            Style::new().fg(SHARED),
+        ));
+    }
+    let packaged = marked
+        .iter()
+        .filter(|(_, e)| e.owner.package().is_some() || matches!(e.owner, Owner::Packages(_)))
+        .count();
+    if packaged > 0 {
+        lines.push(Line::default());
+        lines.push(Line::styled(
+            format!("  {packaged} of them hold package files."),
+            Style::new().fg(Color::Yellow),
+        ));
+        lines.push(Line::styled(
+            "  Better to remove those with the package manager.",
+            Style::new().fg(Color::Yellow),
+        ));
+    }
+    lines.push(Line::default());
+    lines.push(Line::styled(
+        "  This cannot be undone.",
+        Style::new().fg(Color::Red).bold(),
+    ));
+    if app.is_root {
+        lines.push(Line::styled(
+            "  Running as root: nothing is protected.",
+            Style::new().fg(Color::Red),
+        ));
+    }
+    lines.push(Line::default());
+
+    let height = lines.len() as u16 + 2;
+    let area = centered(frame.area(), width, height);
+    let title = Line::from(Span::styled(
+        format!(" delete {} marked ", marked.len()),
+        Style::new().fg(Color::Red).bold(),
+    ));
+    let hint = Line::from(vec![
+        Span::styled(" y ", Style::new().fg(Color::Red).bold()),
+        Span::styled("delete all · ", Style::new().fg(MUTED)),
+        Span::styled("any other key ", Style::new().fg(ACCENT).bold()),
+        Span::styled("cancel ", Style::new().fg(MUTED)),
+    ])
+    .right_aligned();
+    let block = pane(title)
+        .title_bottom(hint)
+        .border_style(Style::new().fg(Color::Red));
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn draw_deleting_marks(frame: &mut Frame, app: &App) {
+    let width = 44u16.min(frame.area().width);
+    let area = centered(frame.area(), width, 5);
+    let lines = vec![
+        Line::default(),
+        Line::from(vec![
+            Span::styled("  ⠿ ", Style::new().fg(Color::Red).bold()),
+            Span::raw(format!("{} marked items", app.marked_entries().len())),
+        ]),
+    ];
+    let title = Line::from(Span::styled(
+        " deleting ",
+        Style::new().fg(Color::Red).bold(),
+    ));
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines).block(pane(title)), area);
+}
+
 fn draw_deleting(frame: &mut Frame, app: &App, index: usize) {
     let entry = app.child(index);
     let width = 44u16.min(frame.area().width);

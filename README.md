@@ -24,7 +24,8 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
   that sizes everything by what deleting it gives back, and the delete prompt says the same
 - **Sorting** by size, name, item count or last change, in either direction
 - **Filter** (`/`): type part of a name and the list narrows as you type, with the total size of what matches
-- **Safe delete**: always asks first, removes what it can, never enters mounted drives, totals update instantly
+- **Safe delete**: always asks first, removes what it can, never enters mounted drives, totals update instantly.
+  Mark entries with `Space`, in as many folders as you like, and delete them together after one review
 - **Details pane** with sizes, space saved by compression or sparse files, share of the folder,
   the biggest items inside a folder and a breakdown by type (video, images, code, archives...)
 - **Age heat**: `a` colors every bar by when it last changed (today → years ago) and shows its age,
@@ -100,7 +101,8 @@ nudu -r           # read-only: deleting is turned off
 | `o` | Show owner tags in the list |
 | `O` | Owners ranking: who uses the most space in this folder |
 | `s` `n` `c` `m` | Sort by size, name, item count, last modified (again to reverse) |
-| `d` / `Del` | Delete the selected entry (asks first, `y` to confirm) |
+| `Space` | Mark or unmark an entry for deleting (`Esc` unmarks all) |
+| `d` / `Del` | Delete the marked entries, or the selected one (asks first, `y` to confirm) |
 | `S` | Rescan with sudo (when some folders were unreadable) |
 | `?` | Help |
 | `q` / `Esc` | Quit |

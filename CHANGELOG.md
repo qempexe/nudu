@@ -18,6 +18,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Deleting shared data: the prompt shows what it really frees, and the message afterwards no longer
   claims the shared part was freed
 
+- Mark entries with `Space`, across folders, and delete them together: `d` shows one review with
+  the list and the total, `Esc` unmarks everything
 - The header shows the filesystem's compression setting next to its type, like `btrfs zstd:3`
   (btrfs, f2fs, bcachefs)
 

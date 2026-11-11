@@ -8,9 +8,33 @@
 //! A `trail` is the list of child indexes from the root down to a folder,
 //! the same one app.rs keeps for navigation.
 
+use std::path::Path;
+
 use crate::age;
 use crate::filetype;
 use crate::scan::Entry;
+
+/// The trail leading to `path`, in a tree that was scanned at `root_path`.
+/// `None` when the path is outside the tree or no longer in it.
+pub fn trail_to(root: &Entry, root_path: &Path, path: &Path) -> Option<Vec<usize>> {
+    let below = path.strip_prefix(root_path).ok()?;
+    let mut dir = root;
+    let mut trail = Vec::new();
+    for name in below.components() {
+        let index = dir
+            .children
+            .iter()
+            .position(|c| c.name == name.as_os_str())?;
+        trail.push(index);
+        dir = &dir.children[index];
+    }
+    Some(trail)
+}
+
+/// The entry at the end of `trail`.
+pub fn entry_at<'a>(root: &'a Entry, trail: &[usize]) -> &'a Entry {
+    trail.iter().fold(root, |dir, &i| &dir.children[i])
+}
 
 /// The folder at the end of `trail`, mutably.
 pub fn folder_mut<'a>(root: &'a mut Entry, trail: &[usize]) -> &'a mut Entry {
@@ -115,6 +139,21 @@ mod tests {
             "root",
             vec![dir("a", vec![file("x", 10), file("y", 20)]), file("b", 5)],
         )
+    }
+
+    #[test]
+    fn finds_the_trail_to_a_path() {
+        let root = tree();
+        let base = Path::new("/data");
+        assert_eq!(trail_to(&root, base, Path::new("/data")), Some(vec![]));
+        assert_eq!(
+            trail_to(&root, base, Path::new("/data/a/y")),
+            Some(vec![0, 1])
+        );
+        assert_eq!(entry_at(&root, &[0, 1]).name, "y");
+        // Gone from the tree, or never in it.
+        assert_eq!(trail_to(&root, base, Path::new("/data/a/z")), None);
+        assert_eq!(trail_to(&root, base, Path::new("/elsewhere/a")), None);
     }
 
     #[test]

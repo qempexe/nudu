@@ -110,6 +110,13 @@ pub struct App {
     pub confirm: Option<usize>,
     /// Child index being deleted right now (drawn as "deleting...").
     pub deleting: Option<usize>,
+    /// `space`: entries marked to be deleted together, by full path, so
+    /// marks survive sorting, moving between folders and rescans.
+    pub marks: Vec<PathBuf>,
+    /// The marked entries wait for the user to confirm their deletion.
+    pub confirm_marks: bool,
+    /// The marked entries are being deleted right now.
+    pub deleting_marks: bool,
     /// Footer note from the last action.
     pub message: Option<Message>,
     /// A scan waiting to run (see `Job`).
@@ -150,6 +157,9 @@ impl App {
             shared_stale: false,
             confirm: None,
             deleting: None,
+            marks: Vec::new(),
+            confirm_marks: false,
+            deleting_marks: false,
             message: None,
             job: None,
             mounts_seen: read_mounts(),
@@ -333,6 +343,10 @@ impl App {
                 self.perform_delete(index);
                 continue;
             }
+            if std::mem::take(&mut self.deleting_marks) {
+                self.perform_marked_delete();
+                continue;
+            }
             if let Some(job) = self.job.take() {
                 match job {
                     Job::ScanMount(index) => self.scan_mount(terminal, index)?,
@@ -495,6 +509,13 @@ impl App {
             }
             return;
         }
+        // The same for a batch of marked entries. The marks stay on a "no".
+        if std::mem::take(&mut self.confirm_marks) {
+            if key.code == KeyCode::Char('y') {
+                self.deleting_marks = true;
+            }
+            return;
+        }
         // While typing a filter, keys go into it.
         if self.filter.as_ref().is_some_and(|f| f.typing) {
             self.filter_key(key);
@@ -504,6 +525,12 @@ impl App {
         match key.code {
             // Esc first drops a filter, and only quits when there is none.
             KeyCode::Esc if self.filter.is_some() => self.set_filter(None),
+            // Then it drops the marks: quitting by accident would lose them.
+            KeyCode::Esc if !self.marks.is_empty() => {
+                self.marks.clear();
+                self.note("Marks cleared", false);
+            }
+            KeyCode::Char(' ') => self.toggle_mark(),
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('/') => {
                 // Edit the current filter, or start a new one.
@@ -644,10 +671,134 @@ impl App {
         }
     }
 
-    /// `d`: ask before deleting the selected entry.
+    /// `space`: mark or unmark the selected entry, then step down so a
+    /// run of entries can be marked by holding the key.
+    fn toggle_mark(&mut self) {
+        if self.settings.read_only {
+            self.note("Read-only mode: deleting is turned off.", true);
+            return;
+        }
+        let Some(index) = self.list.selected().and_then(|r| self.child_index(r)) else {
+            return;
+        };
+        if self.child(index).skipped.is_some() {
+            self.note("Mount points and snapshots can't be deleted here.", true);
+            return;
+        }
+        let path = self.current_path().join(&self.child(index).name);
+        match self.marks.iter().position(|m| *m == path) {
+            Some(at) => {
+                self.marks.remove(at);
+            }
+            None => self.marks.push(path),
+        }
+        self.move_by(1);
+    }
+
+    /// Is the entry at this full path marked?
+    pub fn is_marked(&self, path: &std::path::Path) -> bool {
+        self.marks.iter().any(|m| m == path)
+    }
+
+    /// The marked entries that will really be deleted, with their paths:
+    /// without the ones that vanished from the tree, and without the ones
+    /// inside another marked folder (that folder takes them along).
+    pub fn marked_entries(&self) -> Vec<(&PathBuf, &Entry)> {
+        self.marks
+            .iter()
+            .filter(|path| {
+                !self
+                    .marks
+                    .iter()
+                    .any(|other| other != *path && path.starts_with(other))
+            })
+            .filter_map(|path| {
+                let trail = tree::trail_to(&self.root, &self.root_path, path)?;
+                // The scan root itself has no parent to delete it from.
+                (!trail.is_empty()).then(|| (path, tree::entry_at(&self.root, &trail)))
+            })
+            .collect()
+    }
+
+    /// Deletes every marked entry, then puts the browser back on its feet:
+    /// the open folder may be gone, or sit at another index now.
+    fn perform_marked_delete(&mut self) {
+        let here = self.current_path();
+        let row = self.list.selected().unwrap_or(0);
+        let targets: Vec<PathBuf> = self
+            .marked_entries()
+            .into_iter()
+            .map(|(path, _)| path.clone())
+            .collect();
+
+        let (mut done, mut freed, mut shared) = (0usize, 0u64, 0u64);
+        let mut failed: Option<(String, io::Error)> = None;
+        for path in &targets {
+            // Looked up again each time: every delete shifts indexes.
+            let Some(mut trail) = tree::trail_to(&self.root, &self.root_path, path) else {
+                continue;
+            };
+            let Some(index) = trail.pop() else { continue };
+            let Some(dir_path) = path.parent() else {
+                continue;
+            };
+            shared += tree::entry_at(&self.root, &trail).children[index].shared;
+            let outcome =
+                delete::delete(&mut self.root, &trail, dir_path, index, &self.settings.scan);
+            freed += outcome.freed;
+            match outcome.error {
+                None => done += 1,
+                Some(e) => {
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    failed.get_or_insert((name.into_owned(), e));
+                }
+            }
+        }
+        self.marks.clear();
+
+        // Back to the open folder, or the nearest one above it that is left.
+        self.trail = here
+            .ancestors()
+            .find_map(|p| tree::trail_to(&self.root, &self.root_path, p))
+            .unwrap_or_default();
+        self.refresh_order();
+        *self.list.offset_mut() = 0;
+        self.select_row(row);
+        self.fs = FsInfo::for_path(&self.root_path);
+
+        let items = if done == 1 { "item" } else { "items" };
+        let freed = if shared > 0 {
+            self.shared_stale = true;
+            format!(
+                "about {} ({} was shared and stays on disk)",
+                human_size(freed.saturating_sub(shared)),
+                human_size(shared.min(freed))
+            )
+        } else {
+            human_size(freed)
+        };
+        match failed {
+            None => self.note(&format!("Deleted {done} {items} · freed {freed}"), false),
+            Some((name, e)) => self.note(
+                &format!("Deleted {done} {items}, but not all of {name}: {e} · freed {freed}"),
+                true,
+            ),
+        }
+    }
+
+    /// `d`: ask before deleting the marked entries, or the selected one.
     fn request_delete(&mut self) {
         if self.settings.read_only {
             self.note("Read-only mode: deleting is turned off.", true);
+            return;
+        }
+        if !self.marks.is_empty() {
+            if self.marked_entries().is_empty() {
+                self.marks.clear();
+                self.note("The marked items are no longer there.", true);
+            } else {
+                self.confirm_marks = true;
+            }
             return;
         }
         let Some(row) = self.list.selected() else {
@@ -831,6 +982,7 @@ impl App {
         self.settings.scan = opts;
         self.trail.clear();
         self.filter = None;
+        self.marks.clear();
         self.fs = FsInfo::for_path(&self.root_path);
         self.mounts_seen = read_mounts();
         *self.list.offset_mut() = 0;
@@ -1056,6 +1208,113 @@ mod tests {
         press(&mut app, KeyCode::Char('x'));
         assert!(!app.exclusive && app.cold.is_none());
         assert_eq!(shown(&app)[0], "Steam");
+    }
+
+    #[test]
+    fn space_marks_and_steps_down() {
+        let mut app = app();
+        app.settings.read_only = false;
+        press(&mut app, KeyCode::Char(' ')); // Steam
+        press(&mut app, KeyCode::Char(' ')); // Trash
+        assert_eq!(selected(&app), "notes.txt");
+        assert!(app.is_marked(std::path::Path::new("/tmp/Steam")));
+        assert_eq!(app.marked_entries().len(), 2);
+
+        // Space on a marked entry takes the mark off again.
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.marks, [PathBuf::from("/tmp/Steam")]);
+
+        // d asks about the marked ones; another key keeps them marked.
+        press(&mut app, KeyCode::Char('d'));
+        assert!(app.confirm_marks && app.confirm.is_none());
+        press(&mut app, KeyCode::Char('n'));
+        assert!(!app.confirm_marks && !app.deleting_marks);
+        assert_eq!(app.marks.len(), 1);
+
+        // Esc drops the marks before it would quit.
+        press(&mut app, KeyCode::Esc);
+        assert!(app.marks.is_empty() && !app.should_quit);
+    }
+
+    #[test]
+    fn marks_inside_a_marked_folder_are_not_counted_twice() {
+        let mut app = app();
+        app.marks = vec![
+            PathBuf::from("/tmp/Steam"),
+            PathBuf::from("/tmp/Steam/game"),
+            PathBuf::from("/tmp/gone"),
+            PathBuf::from("/tmp/notes.txt"),
+        ];
+        let names: Vec<_> = app
+            .marked_entries()
+            .into_iter()
+            .map(|(_, e)| e.name.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["Steam", "notes.txt"]);
+    }
+
+    #[test]
+    fn marked_entries_are_deleted_across_folders() {
+        use std::fs;
+        let base = std::env::temp_dir().join(format!("nudu-marks-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("a")).unwrap();
+        fs::create_dir_all(base.join("b")).unwrap();
+        fs::write(base.join("a/x"), vec![0u8; 20_000]).unwrap();
+        fs::write(base.join("a/y"), vec![0u8; 10_000]).unwrap();
+        fs::write(base.join("b/z"), vec![0u8; 30_000]).unwrap();
+        fs::write(base.join("keep"), vec![0u8; 5_000]).unwrap();
+
+        let opts = ScanOptions {
+            one_filesystem: true,
+            include: Vec::new(),
+            extents: false,
+        };
+        let root = scan::scan(&base, opts.clone(), &Default::default())
+            .unwrap()
+            .unwrap();
+        let settings = Settings {
+            icons: false,
+            read_only: false,
+            scan: opts,
+        };
+        let mut app = App::new(root, base.clone(), None, settings);
+
+        // Open `a`, with marks in it and in another folder.
+        let a = app
+            .root
+            .children
+            .iter()
+            .position(|c| c.name == "a")
+            .unwrap();
+        app.enter(a);
+        app.marks = vec![base.join("a/x"), base.join("b")];
+        let before = app.root.disk;
+        let gone: u64 = app.marked_entries().iter().map(|(_, e)| e.disk).sum();
+        app.perform_marked_delete();
+        assert_eq!(app.current_path(), base.join("a"));
+        assert_eq!(shown(&app), ["..", "y"]);
+        assert!(!base.join("b").exists() && base.join("keep").exists());
+        assert!(app.marks.is_empty());
+        // Totals above the deleted entries shrank by what they held.
+        assert_eq!(app.root.disk, before - gone);
+        assert_eq!(app.root.items, 3); // a, a/y, keep
+
+        // Deleting the open folder itself lands in its parent.
+        app.marks = vec![base.join("a")];
+        app.perform_marked_delete();
+        assert_eq!(app.current_path(), base);
+        assert_eq!(shown(&app), ["keep"]);
+
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn read_only_mode_does_not_mark() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.marks.is_empty());
     }
 
     #[test]
