@@ -11,6 +11,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
   shows how many entries match and their total size. Smart case: lowercase ignores case, a capital
   letter makes it exact. `Enter` keeps the filter, `Esc` clears it, opening another folder drops it
 
+### Fixed
+- The selected row's percent, the empty part of its bar and its tags were invisible
+  (gray on the gray highlight); they now use the normal text color
+
 ## [0.1.0] - 2026-10-17
 
 First release.

@@ -239,15 +239,24 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
         total: app.size_of(dir),
     };
     let filter = app.active_filter();
+    let selected = app.list.selected();
     let mut items: Vec<ListItem> = app
         .rows()
         .into_iter()
-        .map(|row| match row {
-            Row::Parent => parent_item(style.icons),
-            Row::Entry(e) => {
-                let found = filter.and_then(|f| f.find(&e.name.to_string_lossy()));
-                entry_item(e, app.size_of(e), &style, found)
-            }
+        .enumerate()
+        .map(|(i, row)| {
+            let line = match row {
+                Row::Parent => parent_item(style.icons),
+                Row::Entry(e) => {
+                    let found = filter.and_then(|f| f.find(&e.name.to_string_lossy()));
+                    entry_item(e, app.size_of(e), &style, found)
+                }
+            };
+            ListItem::new(if selected == Some(i) {
+                on_highlight(line)
+            } else {
+                line
+            })
         })
         .collect();
 
@@ -307,12 +316,24 @@ fn heat_legend() -> Line<'static> {
     Line::from(spans).right_aligned()
 }
 
-fn parent_item(icons: bool) -> ListItem<'static> {
+/// The selected row has a `MUTED` background, so anything drawn in `MUTED`
+/// on it (the percent, the empty part of the bar, tags, `..`) would be the
+/// same color as what's behind it. Those parts switch to the normal text color.
+fn on_highlight(mut line: Line<'static>) -> Line<'static> {
+    for span in &mut line.spans {
+        if span.style.fg == Some(MUTED) {
+            span.style.fg = Some(Color::Reset);
+        }
+    }
+    line
+}
+
+fn parent_item(icons: bool) -> Line<'static> {
     let icon = if icons { "󰁝" } else { "^" };
-    ListItem::new(Line::from(vec![
+    Line::from(vec![
         Span::styled(format!("{icon} "), Style::new().fg(MUTED)),
         Span::styled("..", Style::new().fg(MUTED)),
-    ]))
+    ])
 }
 
 /// What every row of the list shares.
@@ -336,7 +357,7 @@ fn entry_item(
     size: u64,
     style: &RowStyle,
     found: Option<(usize, usize)>,
-) -> ListItem<'static> {
+) -> Line<'static> {
     let RowStyle {
         icons,
         heat,
@@ -415,7 +436,7 @@ fn entry_item(
         )
     };
     spans.push(last);
-    ListItem::new(Line::from(spans))
+    Line::from(spans)
 }
 
 /// Splits a (padded or cut) name so the filter match stands out. A match
@@ -1403,6 +1424,19 @@ mod tests {
         for r in [0.0, 0.13, 0.5, 0.99, 1.0] {
             assert_eq!(block_gauge(r, 10).chars().count(), 10);
         }
+    }
+
+    #[test]
+    fn selected_row_has_no_muted_text() {
+        let line = Line::from(vec![
+            Span::styled("name", Style::new().fg(ACCENT)),
+            Span::styled(" 68%", Style::new().fg(MUTED)),
+            Span::raw(" 1.0 GiB"),
+        ]);
+        let line = on_highlight(line);
+        assert_eq!(line.spans[0].style.fg, Some(ACCENT));
+        assert_eq!(line.spans[1].style.fg, Some(Color::Reset));
+        assert_eq!(line.spans[2].style.fg, None);
     }
 
     #[test]
