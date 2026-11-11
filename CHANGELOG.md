@@ -6,22 +6,26 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
-- Filter by name (`/`): the list narrows as you type, matches are highlighted, and the list border
-  shows how many entries match and their total size. Smart case: lowercase ignores case, a capital
-  letter makes it exact. `Enter` keeps the filter, `Esc` clears it, opening another folder drops it
+## [0.2.0] - 2026-11-11
 
+### Shared data and compression
 - Shared data on btrfs, XFS and bcachefs: the details pane shows how much of a file or folder is
   also used by snapshots or reflink copies (`Shared`) and what deleting it would really free
   (`If deleted`). `--no-extents` skips the lookup
 - Exclusive view (`x`): sizes, bars and sorting only count data that nothing else shares
 - Deleting shared data: the prompt shows what it really frees, and the message afterwards no longer
   claims the shared part was freed
-
-- Mark entries with `Space`, across folders, and delete them together: `d` shows one review with
-  the list and the total, `Esc` unmarks everything
 - The header shows the filesystem's compression setting next to its type, like `btrfs zstd:3`
   (btrfs, f2fs, bcachefs)
+
+### Browsing
+- Filter by name (`/`): the list narrows as you type, matches are highlighted, and the list border
+  shows how many entries match and their total size. Smart case: lowercase ignores case, a capital
+  letter makes it exact. `Enter` keeps the filter, `Esc` clears it, opening another folder drops it
+
+### Deleting
+- Mark entries with `Space`, across folders, and delete them together: `d` shows one review with
+  the list and the total, `Esc` unmarks everything
 
 ### Fixed
 - The selected row's percent, the empty part of its bar and its tags were invisible
@@ -64,5 +68,6 @@ First release.
 - `install.sh` installs to `/usr/local/bin` so `sudo nudu` works
 - `S` restarts nudu with sudo when folders were unreadable; a `root` badge shows root mode
 
-[Unreleased]: https://github.com/qempexe/nudu/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/qempexe/nudu/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/qempexe/nudu/releases/tag/v0.2.0
 [0.1.0]: https://github.com/qempexe/nudu/releases/tag/v0.1.0

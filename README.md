@@ -45,9 +45,9 @@ Static binaries for x86_64 and ARM64 are attached to every
 [release](https://github.com/qempexe/nudu/releases). They run on any Linux distribution.
 
 ```sh
-curl -LO https://github.com/qempexe/nudu/releases/latest/download/nudu-v0.1.0-x86_64-unknown-linux-musl.tar.gz
-tar xzf nudu-v0.1.0-x86_64-unknown-linux-musl.tar.gz
-sudo install -m 755 nudu-v0.1.0-x86_64-unknown-linux-musl/nudu /usr/local/bin/nudu
+curl -LO https://github.com/qempexe/nudu/releases/latest/download/nudu-v0.2.0-x86_64-unknown-linux-musl.tar.gz
+tar xzf nudu-v0.2.0-x86_64-unknown-linux-musl.tar.gz
+sudo install -m 755 nudu-v0.2.0-x86_64-unknown-linux-musl/nudu /usr/local/bin/nudu
 ```
 
 ### From source
