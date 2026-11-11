@@ -18,6 +18,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Deleting shared data: the prompt shows what it really frees, and the message afterwards no longer
   claims the shared part was freed
 
+- The header shows the filesystem's compression setting next to its type, like `btrfs zstd:3`
+  (btrfs, f2fs, bcachefs)
+
 ### Fixed
 - The selected row's percent, the empty part of its bar and its tags were invisible
   (gray on the gray highlight); they now use the normal text color

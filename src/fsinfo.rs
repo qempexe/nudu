@@ -12,6 +12,8 @@ pub struct FsInfo {
     pub used: u64,
     /// Total size of the filesystem in bytes.
     pub total: u64,
+    /// Transparent compression from the mount options, like `zstd:3`.
+    pub compression: Option<String>,
 }
 
 impl FsInfo {
@@ -21,12 +23,14 @@ impl FsInfo {
         let block = stats.f_frsize;
         let total = stats.f_blocks * block;
         let used = total.saturating_sub(stats.f_bfree * block);
-        let fs_type = MountTable::load()
-            .containing(path)
+        let table = MountTable::load();
+        let mount = table.containing(path);
+        let fs_type = mount
             .map(|m| m.fs_type.clone())
             .unwrap_or_else(|| "?".into());
         Some(Self {
             fs_type,
+            compression: mount.and_then(|m| m.compression()).map(String::from),
             used,
             total,
         })

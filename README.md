@@ -33,12 +33,8 @@ A fast terminal disk usage analyzer. Scan a folder, browse it, and see what is e
   a Flatpak app, Steam or a single game, Docker, or an app's cache, config or data folder.
   System files no package claims show up as `unowned`. `O` ranks who uses the most space,
   and deleting a package's files reminds you to use the package manager instead
-- **Filesystem header** showing the filesystem type and how full it is
+- **Filesystem header** showing the filesystem type, its compression setting (like `btrfs zstd:3`) and how full it is
 - **Follows your terminal theme**: all colors come from your terminal's palette
-
-### Planned
-
-- **btrfs compression** shown in the header
 
 ## Install
 

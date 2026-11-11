@@ -26,6 +26,7 @@ use ratatui::widgets::{
 use crate::age::{self, Bucket};
 use crate::app::{App, Row};
 use crate::filetype::Category;
+use crate::fsinfo::FsInfo;
 use crate::owners::Owner;
 use crate::scan::{Entry, Kind, Skipped};
 use crate::scanning::Snapshot;
@@ -85,7 +86,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 // ── Header ──────────────────────────────────────────────────────────────────
 
 fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
-    let fs_line = fs_summary(app);
+    let fs_line = fs_summary(app.fs.as_ref());
     let fs_width = fs_line.width() as u16;
     let [left, right] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(fs_width)]).areas(area);
@@ -132,9 +133,10 @@ fn breadcrumb(path: &str) -> Vec<Span<'static>> {
     spans
 }
 
-/// `btrfs · 410.2 GiB / 476.0 GiB ▕████▊   ▏`
-fn fs_summary(app: &App) -> Line<'static> {
-    let Some(fs) = &app.fs else {
+/// `btrfs zstd:3 · 410.2 GiB / 476.0 GiB ▕████▊   ▏`
+/// (the compression setting only when the filesystem has one)
+fn fs_summary(fs: Option<&FsInfo>) -> Line<'static> {
+    let Some(fs) = fs else {
         return Line::default();
     };
     let ratio = fs.used_ratio();
@@ -145,8 +147,14 @@ fn fs_summary(app: &App) -> Line<'static> {
     } else {
         Color::Green
     };
-    Line::from(vec![
-        Span::styled(fs.fs_type.clone(), Style::new().bold()),
+    let mut spans = vec![Span::styled(fs.fs_type.clone(), Style::new().bold())];
+    if let Some(compression) = &fs.compression {
+        spans.push(Span::styled(
+            format!(" {compression}"),
+            Style::new().fg(Color::Green),
+        ));
+    }
+    spans.extend([
         Span::styled(" · ", Style::new().fg(MUTED)),
         Span::raw(format!(
             "{} / {} ",
@@ -156,7 +164,8 @@ fn fs_summary(app: &App) -> Line<'static> {
         Span::styled("▕", Style::new().fg(MUTED)),
         Span::styled(block_gauge(ratio, 10), Style::new().fg(color)),
         Span::styled("▏ ", Style::new().fg(MUTED)),
-    ])
+    ]);
+    Line::from(spans)
 }
 
 /// A gauge in eighths of a cell: `████▊     `.
@@ -1539,6 +1548,23 @@ mod tests {
             frees_amount(&entry(Kind::Dir, 50 * MIB, 20 * MIB)),
             "≥ 30.0 MiB"
         );
+    }
+
+    #[test]
+    fn header_names_the_compression_setting() {
+        let mut fs = FsInfo {
+            fs_type: "btrfs".into(),
+            used: 0,
+            total: 0,
+            compression: Some("zstd:3".into()),
+        };
+        assert!(
+            fs_summary(Some(&fs))
+                .to_string()
+                .starts_with("btrfs zstd:3 · ")
+        );
+        fs.compression = None;
+        assert!(fs_summary(Some(&fs)).to_string().starts_with("btrfs · "));
     }
 
     #[test]

@@ -20,6 +20,29 @@ pub struct Mount {
     pub source: String,
     /// Device id of the filesystem (`major:minor`), shared by all its mounts.
     pub dev: String,
+    /// Filesystem options, like `rw,compress=zstd:3,ssd`.
+    pub options: String,
+}
+
+impl Mount {
+    /// Transparent compression set in the mount options, like `zstd:3`:
+    /// btrfs (`compress=`, `compress-force=`), f2fs (`compress_algorithm=`)
+    /// and bcachefs (`compression=`). `None` when it is off.
+    ///
+    /// This is the setting for new data, not a measurement: files written
+    /// before it was turned on stay as they were.
+    pub fn compression(&self) -> Option<&str> {
+        const KEYS: [&str; 4] = [
+            "compress-force=",
+            "compress=",
+            "compress_algorithm=",
+            "compression=",
+        ];
+        self.options
+            .split(',')
+            .find_map(|opt| KEYS.iter().find_map(|key| opt.strip_prefix(key)))
+            .filter(|value| !matches!(*value, "" | "no" | "none"))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -57,11 +80,13 @@ impl MountTable {
             let (Some(fs_type), Some(source)) = (right.next(), right.next()) else {
                 continue;
             };
+            let options = right.next().unwrap_or_default();
             let mount = Mount {
                 point: PathBuf::from(unescape(point)),
                 fs_type: fs_type.to_string(),
                 source: unescape(source),
                 dev: dev.to_string(),
+                options: options.to_string(),
             };
             // Later lines are mounted on top of earlier ones at the same
             // point, so the last one wins.
@@ -304,18 +329,43 @@ mod tests {
     }
 
     #[test]
+    fn reads_compression_from_mount_options() {
+        let t = table();
+        assert_eq!(t.at(Path::new("/")).unwrap().compression(), Some("zstd:3"));
+        assert_eq!(t.at(Path::new("/boot")).unwrap().compression(), None);
+        // The snapshots subvolume in the sample is mounted without it.
+        assert_eq!(t.at(Path::new("/.snapshots")).unwrap().compression(), None);
+
+        let with = |options: &str| Mount {
+            point: "/".into(),
+            fs_type: "btrfs".into(),
+            source: "/dev/sda1".into(),
+            dev: "0:25".into(),
+            options: options.into(),
+        };
+        assert_eq!(with("rw,compress-force=lzo,ssd").compression(), Some("lzo"));
+        assert_eq!(with("rw,compress=no").compression(), None);
+        assert_eq!(
+            with("rw,compress_algorithm=zstd:6").compression(),
+            Some("zstd:6")
+        );
+    }
+
+    #[test]
     fn tmpfs_mounts_are_not_merged_by_name() {
         let a = Mount {
             point: "/tmp".into(),
             fs_type: "tmpfs".into(),
             source: "tmpfs".into(),
             dev: "0:30".into(),
+            options: String::new(),
         };
         let b = Mount {
             point: "/run".into(),
             fs_type: "tmpfs".into(),
             source: "tmpfs".into(),
             dev: "0:31".into(),
+            options: String::new(),
         };
         assert!(!same_filesystem(&a, &b));
     }
@@ -327,18 +377,21 @@ mod tests {
             fs_type: "zfs".into(),
             source: "tank/root".into(),
             dev: "0:40".into(),
+            options: String::new(),
         };
         let b = Mount {
             point: "/home".into(),
             fs_type: "zfs".into(),
             source: "tank/home".into(),
             dev: "0:41".into(),
+            options: String::new(),
         };
         let c = Mount {
             point: "/data".into(),
             fs_type: "zfs".into(),
             source: "other/data".into(),
             dev: "0:42".into(),
+            options: String::new(),
         };
         assert!(same_filesystem(&a, &b));
         assert!(!same_filesystem(&a, &c));
